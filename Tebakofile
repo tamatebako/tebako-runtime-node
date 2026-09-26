@@ -1,0 +1,154 @@
+# Feedstock recipe for node
+# spec 13 §9 + docs/conventions.md in tebako-packages/index
+name: "node"
+kind: runtime
+summary: "Node.js (official prebuilt distributions) — tebako node RUNTIME pairs (wrapper exe + env image); the hermetic javascript engine"
+
+# The spec 28 §8 implementation axis: ONE recipe, flavored sources. node
+# ships a single implementation today — the official Node.js
+# distribution — so `official` is the default (and only) flavor; every
+# default resolution channel points here. The axis exists so a future
+# distribution variant (a fork line, a scenario build) slots in without a
+# recipe-shape change.
+flavors:
+  official:
+    implementation: "node"
+    language_version: "24"           # the node language line (NODE_MAJOR_VERSION)
+    abi_line: "137"                  # NODE_MODULE_VERSION of the v24 line — the native-addon ABI grammar (verified against src/node_version.h of the pinned tarball)
+    interpreter_api_version: "24"    # layout.yaml's required declared line (the "3.4"-style line; node: the major)
+    # The staged tree's spawn surface: bin/node plus the npm/npx/corepack
+    # shims (symlinks into lib/node_modules/... on POSIX — the image
+    # preserves them). On windows those three ship as .cmd shims; exec of
+    # a .cmd through the runtime boot is exercised at the factory dogfood,
+    # so the windows leg declares the platform-true surface until then
+    # (the graalvm entrypoints_windows_drop precedent).
+    entrypoints: [node, npm, npx, corepack]
+    entrypoints_windows_drop: [npm, npx, corepack]
+    upstream:
+      # Node.js 24.21.0 (LTS Krypton) — one binary source per platform
+      # (repack: no compilation). platform is the spec 03 triplet;
+      # strip_components is the nesting depth of the payload root inside
+      # the archive (every node dist nests under one dir; the windows zip
+      # stages node.exe + the .cmd shims at its root).
+      # Digests verified against nodejs.org SHASUMS256.txt 2026-09-26.
+      version: "24.21.0"
+      sources:
+        - platform: "aarch64-macos"
+          url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz"
+          sha256: "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057"
+          strip_components: 1
+        - platform: "x86_64-macos"
+          url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.gz"
+          sha256: "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097"
+          strip_components: 1
+        - platform: "x86_64-linux-gnu"
+          url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz"
+          sha256: "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff"
+          strip_components: 1
+        - platform: "aarch64-linux-gnu"
+          url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.gz"
+          sha256: "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5"
+          strip_components: 1
+        # The musl legs: nodejs.org ships no musl build — these come from
+        # unofficial-builds.nodejs.org (the docker-node provenance). The
+        # manifest's source/provenance keys record the non-upstream
+        # origin; resolution picks them by triplet, never by selector.
+        - platform: "x86_64-linux-musl"
+          url: "https://unofficial-builds.nodejs.org/download/release/v24.21.0/node-v24.21.0-linux-x64-musl.tar.gz"
+          sha256: "01a713e34da98e7b4d2a3191ee7ca3f93dd0384d1a2ef23c379b2161ee6e133a"
+          strip_components: 1
+        - platform: "aarch64-linux-musl"
+          url: "https://unofficial-builds.nodejs.org/download/release/v24.21.0/node-v24.21.0-linux-arm64-musl.tar.gz"
+          sha256: "3048b0811e158ca0d8672b59c839861763e144492980d8d29b369dfee45747e4"
+          strip_components: 1
+        - platform: "x86_64-windows-ucrt"
+          url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
+          sha256: "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541"
+          strip_components: 1
+        # aarch64-windows-ucrt (node-v24.21.0-win-arm64.zip, upstream
+        # official since the v20 line) lands when the tebako product
+        # ships tebako-runtime-launcher for windows-ucrt-arm64 — the pair
+        # needs its wrapper exe, and v2.8.17 publishes seven platforms.
+
+build:
+  system: repack          # no compilation: unpack, prune, image
+  deps: []
+
+# The runtime contract (spec 28 revised §8 + spec 29). tools/build renders
+# manifests/runtime.yaml (tier-1, embedded at /__tpkg__/manifest.yaml) and
+# manifests/layout.yaml (the driver pair contract, /lib/tebako/layout.yaml)
+# from this block + the selected flavor's block — the feedstock's SSOT for
+# the pair's declared identity.
+runtime:
+  engine: "node"
+  contract_version: 2              # the spec 17 driver contract the wrapper speaks
+  interpreter: "/bin/node"         # POSIX legs: the staged tree's bin/node
+  interpreter_windows: "/node.exe" # the windows zip stages node.exe at the payload root
+  # visibility key ABSENT in the rendered layout (spec 29 §3's locked
+  # default order): preload on POSIX (node is a dynamic interpreter),
+  # exec-cache on windows — journaled at boot, never a silent fallback.
+  mount_root_override: false       # closed default — node self-locates its home from the interpreter path (bin/..); granting a no-op knob violates spec 00 §9
+  # The tebako product line the pair builds against: the wrapper exe
+  # (tebako-runtime-launcher) and the preload shim (link-unit). The line
+  # number names the artifacts (tebako-runtime-2.8.17-24.21.0-*) and the
+  # release tag (v2.8.17 — the trr convention: the tag IS the tebako
+  # line).
+  #
+  # v2.8.17 (2026-09-25) is the current product line and the first pin of
+  # this factory: it carries every contract the pair speaks — spec 29's
+  # wrapper pattern, spec 32's executable requires edges, spec 33's
+  # on_runtime composition, and the mount-ancestor routes the flavors
+  # mechanism mounts through.
+  wrapper_tebako: "2.8.17"
+  # The wrapper's trust anchor, per tool-platform (the launcher is the
+  # shipped runtime pair's process entry point — an unauthenticated
+  # download would be a supply-chain hole). Digests are the v2.8.17
+  # release's monolith SHA256SUMS entries, fetched 2026-09-26.
+  wrapper_sha256:
+    macos-arm64: "380973d2da5c11f4d21e1ce2fb2657c26bd6a9e6dc2fa32ce05e38bb7903b99a"
+    macos-x86_64: "5729c7a46589a012413426c864552046786d7b945a4f97dbdf390845c68a8172"
+    linux-gnu-x86_64: "a75b85aa5648f4edb39b88657f365a8ba474bf6d29837f9e8382a29f5011b3bc"
+    linux-gnu-arm64: "b6406400196154231148f9ee91841372cb1209425c6fe604c53f0f8e43ec78b7"
+    linux-musl-x86_64: "6532d6d828b78e1d1d85235318b65fa5a4c5ff40d93e4a38ede0818bd615e46f"
+    linux-musl-arm64: "1279a81f8dbab50dea50eb1352720583b8e4274858eb90cdc0ffc400e0456723"
+    windows-ucrt64: "9674f291e0925bb081c3ed5b188746591af766883bd1f262ba6d74760d75970b"
+
+# Factory tools used by tools/build (the imager + the preload shim): the
+# tfs CLI and the link-unit tarball from the tamatebako/tebako release.
+# The asset digests are pinned HERE — tools.sha256 is the repo's
+# toolchain pin SSOT (the workflow carries no version or digest literals;
+# tools/pins.rb reads this block into $GITHUB_ENV). The tfs pins are
+# cross-checked against the release's SHA256SUMS at fetch time; the
+# link-unit tarballs are NOT in that monolith, so these pins are their
+# single trust anchor (verified against the v2.8.17 downloads 2026-09-26).
+tools:
+  repo: "tamatebako/tebako"
+  release: "v2.8.17"
+  # The release machinery pin: the tamatebako/tebako-release-tooling tag
+  # the Gemfile resolves (the sign step's tebako-release exe). The gem is
+  # the signer's single owner (ecosystem invariant 10) — this feedstock
+  # carries no copy of it.
+  release_tooling: "v0.2.1"
+  sha256:
+    tfs:
+      macos-arm64: "f2c957bd27a3b2fea871e04bdf5c8de3689a8327a1474ca698e3936eaf239661"
+      macos-x86_64: "cda457657c1eec648091b23df0c2b3119b1af9cfc1dbd95297772ee546f7ec53"
+      linux-gnu-x86_64: "083e4886f751901493d124cf90f8dc20a88fb9ba0877db9af1a5b42d0c1d64db"
+      linux-gnu-arm64: "7ced6afe31e540d63057b5eb3d62de2a1e2879a4ebec859c50d78c4356f95c86"
+      linux-musl-x86_64: "0f72a236098283674e5f9e967eddaae5b5531c86275d5caffe3c3914a59d34b9"
+      linux-musl-arm64: "de94e87ad0dd7d8e741c484e5fd9a14652be97da54c9c4a58bfbff132f94c800"
+      windows-ucrt64: "5ba7d570621ca39de15e680d1206c21d4b9ac571aef2a639ad94a68c2683f7c7"
+    link-unit:                       # POSIX legs only; the windows image omits preload_shim
+      macos-arm64: "7b8def659d77e57d0f32674b243a31e17af9f2afa2b5b5bea5878a3754c1d379"
+      macos-x86_64: "83472bf465b9a7c3769477555d7a385ccea3b574f2d96adc4acaf39db7e99325"
+      linux-gnu-x86_64: "5703dfe538b8936dcea5cb150410ebe6cea5a410092da4951334d14d0c5d269b"
+      linux-gnu-arm64: "df60eaa75d9dc63cb4ac87e95e2ed6963153167d3db2d51bb3259d96565d6f10"
+      linux-musl-x86_64: "f7e16b5b7361ff90da48d4f39452deb4a71ec3120ecc210e874ecb7b2e4b72e6"
+      linux-musl-arm64: "09a1b53ce153681494ff15db4ff455f8c8965cd843accac2783d3766e07f4e0a"
+
+image:
+  format: limnifs
+  # .tfs everywhere (the tebako fs image — LimniFS format, the product
+  # default since spec 20)
+  extension:
+    default: tfs
