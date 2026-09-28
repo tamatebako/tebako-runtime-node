@@ -493,12 +493,38 @@ jobs:
         # env: context. The windows leg runs a closed PATH: the runner's
         # default PATH carries several stray mingw installs, and keeping
         # them out of DLL/tool resolution removes a whole silent-failure
-        # class.
+        # class. The musl legs run the whole build inside the pinned
+        # alpine container: node's musl dist is NOT fully static (it
+        # needs the musl-linked libstdc++/libgcc_s, which no glibc host
+        # package provides), so the musl userland is the only sound
+        # smoke environment — same pattern the product repo uses for
+        # its own musl execution (node actions stay on the host; the
+        # container is entered via docker run only, and its root-owned
+        # outputs are chowned back so later host steps can write).
         run: |
-          if [ "${{ matrix.platform.triplet }}" = "x86_64-windows-ucrt" ]; then
-            export PATH="/d/a/_temp/msys64/ucrt64/bin:/c/Program Files/Git/usr/bin:/c/Program Files/Git/cmd:/c/Windows/System32"
-          fi
-          tools/build
+          case "${{ matrix.platform.triplet }}" in
+            x86_64-windows-ucrt)
+              export PATH="/d/a/_temp/msys64/ucrt64/bin:/c/Program Files/Git/usr/bin:/c/Program Files/Git/cmd:/c/Windows/System32"
+              tools/build
+              ;;
+            *linux-musl)
+              env_file="$(mktemp)"
+              for v in FLAVOR TRIPLET ASSET_PLATFORM EXE_SUFFIX TAR TFS_CLI \
+                       WRAPPER_BIN PRELOAD_SHIM GITHUB_REF_NAME \
+                       TEBAKO_RELEASE_SIGNING_ENABLED TEBAKO_RELEASE_SIGNING_KEYID; do
+                printf '%s=%s\n' "$v" "${!v-}" >> "$env_file"
+              done
+              docker run --rm \
+                -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE" \
+                --env-file "$env_file" \
+                alpine:3.21 sh -c \
+                'apk add --no-cache bash curl tar coreutils findutils file gawk grep sed libstdc++ libgcc >/dev/null && exec bash tools/build'
+              sudo chown -R "$(id -u):$(id -g)" out .packager
+              ;;
+            *)
+              tools/build
+              ;;
+          esac
 
       - name: Upload payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
