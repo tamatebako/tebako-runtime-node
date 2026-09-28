@@ -1,0 +1,562 @@
+#!/usr/bin/env bash
+# tools/build — fetch + stage + image the node RUNTIME pair (one
+# mechanical leg per triplet, per docs/conventions.md).
+#
+# Repack flow (no compilation): download the pinned node dist of THIS
+# leg's flavor (Tebakofile flavors:<FLAVOR>) for THIS leg's platform,
+# sha256-verify, unpack to the payload root (strip_components from the
+# recipe), stage the preload shim (POSIX legs), embed the tier-1 runtime
+# manifest at /__tpkg__/manifest.yaml (blob digest zeroed per the
+# fixed-point rule) and the layout declaration at /lib/tebako/layout.yaml,
+# image with tfs-cli's in-process writer (the recipe's image.format —
+# limnifs, the product default), then pair the env image with the
+# wrapper exe (tebako-runtime-launcher — the tebako-owned process entry
+# point, spec 29) under the runtime naming grammar:
+#
+#   tebako-runtime-<tebako-line>-<lang-version>-<asset-platform>[.exe]
+#   tebako-runtime-<tebako-line>-<lang-version>-<asset-platform>.tfs
+#
+# plus per-asset .sha256 sidecars and the <stem>.manifest.json release
+# shard (spec 13 §2a: the leg that built the pair publishes its
+# write-once names in-leg; the monolithic manifest.json / SHA256SUMS.txt
+# are NEVER release assets — `tebako-pkg release-index` derives them
+# consumer-side from the shards + the asset listing).
+#
+# Inputs (env; the workflow's matrix exports the per-leg values):
+#   FLAVOR         the recipe's flavor key (spec 28 §8's implementation
+#                  axis — official is the only flavor today) (default: official)
+#   TRIPLET        spec 03 triplet        (default: aarch64-macos)
+#   ASSET_PLATFORM release-asset name form (default: macos-arm64)
+#   EXE_SUFFIX     payload exe suffix     (default: empty; .exe on windows)
+#   TAR            archiver               (default: tar; the windows leg
+#                                          points at the ucrt64 bsdtar —
+#                                          GNU tar cannot read the zip)
+#   TFS_CLI        tfs-cli binary, the in-process imager (default: tfs)
+#   WRAPPER_BIN    the tebako-runtime-launcher exe (REQUIRED — the pair
+#                                          ships both artifacts)
+#   PRELOAD_SHIM   libtfs_preload.dylib/.so to stage (REQUIRED on POSIX;
+#                                          ignored on windows — the
+#                                          windows image omits the grant)
+#   WORK           build workspace (default: out/work-$FLAVOR-$TRIPLET)
+#   OUT            artifact dir   (default: out/$FLAVOR-$TRIPLET)
+#
+# Produces: $OUT/tebako-runtime-<line>-<ver>-<asset>.tfs + the wrapper
+# exe + sidecars + shard (+ payload-$FLAVOR-$TRIPLET.yaml, the release-tier
+# manifest with the real blob sha).
+set -euo pipefail
+
+FEEDSTOCK="$(cd "$(dirname "$0")/.." && pwd)"
+FLAVOR="${FLAVOR:-official}"
+TRIPLET="${TRIPLET:-aarch64-macos}"
+ASSET_PLATFORM="${ASSET_PLATFORM:-macos-arm64}"
+EXE_SUFFIX="${EXE_SUFFIX:-}"
+TAR="${TAR:-tar}"
+
+TFS_CLI="${TFS_CLI:-tfs}"
+WRAPPER_BIN="${WRAPPER_BIN:-}"
+PRELOAD_SHIM="${PRELOAD_SHIM:-}"
+WORK="${WORK:-$FEEDSTOCK/out/work-$FLAVOR-$TRIPLET}"
+OUT="${OUT:-$FEEDSTOCK/out/$FLAVOR-$TRIPLET}"
+
+step() { printf '\n== %s\n' "$*"; }
+
+# sha256sum exists on Git-bash + linux; macOS has only shasum.
+sha256_of() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
+sha256_check() { echo "$1  $2" | { sha256sum -c - 2>/dev/null || shasum -a 256 -c -; }; }
+filesize() { stat -f%z "$1" 2>/dev/null || stat -c%s "$1"; }
+
+# The recipe carries a flavor dimension (spec 28 §8's implementation
+# axis): flavors:<FLAVOR> holds the per-flavor scalars (4-space indent),
+# its upstream: block the version scalar (6-space) and the per-platform
+# sources array (8/10-space). Parse without a YAML dependency (the
+# recipe's shape is the feedstock's own convention, indentation-anchored).
+# FLAVOR names the block; an unknown flavor reads empty and fails the
+# presence checks below — a named error, never a guess (spec 00 §9).
+_flavor_scope='
+  /^flavors:/ { infl = 1; next }
+  /^[a-z_]+:/ { infl = 0 }
+  infl && index($0, "  " flavor ":") == 1 { inf = 1; next }
+  infl && inf && /^  [a-z_]+:/ { inf = 0 }
+  !(infl && inf) { next }
+'
+recipe_flavor_value() {
+  # per-flavor scalar (implementation, language_version, abi_line,
+  # interpreter_api_version, entrypoints, entrypoints_windows_drop) —
+  # 4-space under the flavor key.
+  awk -v flavor="$FLAVOR" -v key="$1" "$_flavor_scope"'
+    $0 ~ ("^    " key ":") {
+      line = $0
+      sub("^    " key ": *", "", line)
+      sub("^\"", "", line)
+      sub("\".*$", "", line)
+      sub(/[ \t]+#.*$/, "", line)
+      sub(/[ \t]+$/, "", line)
+      print line
+      exit
+    }
+  ' "$FEEDSTOCK/Tebakofile"
+}
+recipe_value() {
+  # the flavor's upstream scalar (version) — 6-space; tolerates trailing
+  # comments — the value ends at the closing quote; anything after it is
+  # dropped
+  awk -v flavor="$FLAVOR" -v key="$1" "$_flavor_scope"'
+    $0 ~ ("^      " key ":") {
+      line = $0
+      sub("^      " key ": *\"?", "", line)
+      sub("\".*$", "", line)
+      sub(/[ \t]+#.*$/, "", line)
+      sub(/[ \t]+$/, "", line)
+      print line
+      exit
+    }
+  ' "$FEEDSTOCK/Tebakofile"
+}
+recipe_source_value() {
+  awk -v flavor="$FLAVOR" -v platform="$TRIPLET" -v key="$1" "$_flavor_scope"'
+    /^        - platform:/ { active = ($0 ~ "\"" platform "\"") }
+    active && $0 ~ ("^          " key ":") {
+      sub("^          " key ": *\"?", "")
+      sub("\"$", "")
+      print
+      exit
+    }
+  ' "$FEEDSTOCK/Tebakofile"
+}
+# The runtime block's scalars (indented two under the top-level
+# `runtime:` key) — the SHARED contract keys; the per-flavor contract
+# keys live under flavors:<flavor> (recipe_flavor_value above). Quoted
+# and unquoted values both parse; trailing comments are dropped either
+# way.
+recipe_runtime_value() {
+  awk -v key="$1" '
+    /^runtime:/ { inrt = 1; next }
+    /^[a-z_]+:/ { inrt = 0 }
+    inrt && $0 ~ "^  " key ":" {
+      line = $0
+      sub("^  " key ": *", "", line)
+      sub("^\"", "", line)
+      sub("\".*$", "", line)
+      sub(/[ \t]+#.*$/, "", line)
+      sub(/[ \t]+$/, "", line)
+      print line
+      exit
+    }
+  ' "$FEEDSTOCK/Tebakofile"
+}
+# The image block's format declaration (two under `image:`): the recipe
+# owns the format choice — tools/build FLOWS it to the writer rather
+# than pinning a literal here (spec 00 §10; the product default and the
+# recipe agree today — limnifs).
+recipe_image_value() {
+  awk -v key="$1" '
+    /^image:/ { inim = 1; next }
+    /^[a-z_]+:/ { inim = 0 }
+    inim && $0 ~ "^  " key ":" {
+      line = $0
+      sub("^  " key ": *", "", line)
+      sub("^\"", "", line)
+      sub("\".*$", "", line)
+      sub(/[ \t]+#.*$/, "", line)
+      sub(/[ \t]+$/, "", line)
+      print line
+      exit
+    }
+  ' "$FEEDSTOCK/Tebakofile"
+}
+
+VERSION="$(recipe_value version)"
+URL="$(recipe_source_value url)"
+SHA256="$(recipe_source_value sha256)"
+STRIP="$(recipe_source_value strip_components)"
+[ -n "$VERSION" ] && [ -n "$URL" ] && [ -n "$SHA256" ] && [ -n "$STRIP" ] || {
+  echo "Tebakofile flavors.$FLAVOR upstream version or a sources entry for $TRIPLET unreadable (unknown FLAVOR?)"; exit 1; }
+
+ENGINE="$(recipe_runtime_value engine)"
+IMPLEMENTATION="$(recipe_flavor_value implementation)"
+LANG_VERSION="$(recipe_flavor_value language_version)"
+ABI_LINE="$(recipe_flavor_value abi_line)"
+API_VERSION="$(recipe_flavor_value interpreter_api_version)"
+WRAPPER_TEBAKO="$(recipe_runtime_value wrapper_tebako)"
+IMAGE_FORMAT="$(recipe_image_value format)"
+# The interpreter path is per-platform recipe data (spec 29's wrapper
+# grant): the POSIX dist tree stages bin/node; the windows zip stages
+# node.exe at the payload root.
+if [ -n "$EXE_SUFFIX" ]; then
+  INTERPRETER="$(recipe_runtime_value interpreter_windows)"
+else
+  INTERPRETER="$(recipe_runtime_value interpreter)"
+fi
+# The entrypoints flow list: [node, npm, …] → a space-separated shell list.
+ENTRYPOINTS="$(recipe_flavor_value entrypoints | sed -E 's/^\[//; s/\]$//; s/,/ /g')"
+for v in ENGINE IMPLEMENTATION LANG_VERSION ABI_LINE API_VERSION INTERPRETER WRAPPER_TEBAKO IMAGE_FORMAT; do
+  eval "val=\$$v"
+  [ -n "$val" ] || { echo "Tebakofile runtime/flavors.$FLAVOR .${v} unreadable (or empty)"; exit 1; }
+done
+[ -n "$ENTRYPOINTS" ] || { echo "Tebakofile flavors.$FLAVOR.entrypoints unreadable (or empty)"; exit 1; }
+# The windows carve-out (optional per-flavor entrypoints_windows_drop):
+# names upstream ships only as .cmd shims on windows (npm, npx,
+# corepack) leave the declared surface on that leg — exec of a .cmd
+# through the runtime boot is exercised at the factory dogfood, so the
+# windows leg declares the platform-true surface until then (the graalvm
+# entrypoints_windows_drop precedent). The manifest declares the
+# platform-true truth and read-back still enforces every remaining name.
+if [ -n "$EXE_SUFFIX" ]; then
+  DROP="$(recipe_flavor_value entrypoints_windows_drop | sed -E 's/^\[//; s/\]$//; s/,/ /g')"
+  if [ -n "$DROP" ]; then
+    kept=""
+    for ep in $ENTRYPOINTS; do
+      case " $DROP " in *" $ep "*) : ;; *) kept="$kept $ep" ;; esac
+    done
+    ENTRYPOINTS="${kept# }"
+    echo "windows entrypoints carve-out applied: dropped [$DROP ]"
+  fi
+fi
+
+# Per-platform spellings: the layout's mount_root must equal the wrapper
+# exe's compiled-in WRAPPER_RUNTIME_ROOT (a mismatch is exit 78); the
+# preload shim's extension follows the host's dynamic-loader convention.
+# The staged tree's shape differs by platform: POSIX dists nest the
+# interpreter at bin/node (the entrypoint surface lives at /bin/<name>);
+# the windows zip stages node.exe at the payload root (/node.exe).
+case "$TRIPLET" in
+  *windows*) MOUNT_ROOT="A:/t" ; DL_EXT="" ;;
+  *macos*)   MOUNT_ROOT="/__tfs__" ; DL_EXT="dylib" ;;
+  *linux*)   MOUNT_ROOT="/__tfs__" ; DL_EXT="so" ;;
+  *) echo "unsupported TRIPLET $TRIPLET"; exit 1 ;;
+esac
+
+# One declared entrypoint's in-image path: /bin/<name> on POSIX,
+# /<name>.exe on windows (the zip's flat root — the .cmd shims are
+# carved out above, so only node.exe remains declared there).
+entrypoint_path() {
+  if [ -n "$EXE_SUFFIX" ]; then
+    printf '/%s.exe' "$1"
+  else
+    printf '/bin/%s' "$1"
+  fi
+}
+
+case "$URL" in
+  *.zip)     EXT=".zip" ;;
+  *.tar.gz)  EXT=".tar.gz" ;;
+  *) echo "unsupported upstream archive extension in $URL"; exit 1 ;;
+esac
+
+# The manifest's source.commit records the provenance (the recipe's
+# promise): nodejs.org's dist is the upstream release; the musl legs
+# come from unofficial-builds.nodejs.org (nodejs.org ships no musl
+# build — the docker-node provenance).
+case "$URL" in
+  *unofficial-builds*) UPSTREAM_COMMIT="v$VERSION+unofficial-musl" ;;
+  *)                   UPSTREAM_COMMIT="v$VERSION" ;;
+esac
+
+STEM="tebako-runtime-$WRAPPER_TEBAKO-$VERSION-$ASSET_PLATFORM"
+
+mkdir -p "$WORK" "$OUT"
+
+# ------------------------------------------------------------------ fetch
+step "fetch + sha256-verify $IMPLEMENTATION $VERSION ($TRIPLET)"
+ARCHIVE="$WORK/node-dist$EXT"
+if [ ! -f "$ARCHIVE" ]; then
+  curl -sL --fail -o "$ARCHIVE" "$URL"
+fi
+sha256_check "$SHA256" "$ARCHIVE"
+
+# ------------------------------------------------------------------ stage
+step "stage the payload tree (strip $STRIP)"
+ROOT="$WORK/root"
+rm -rf "$ROOT"
+mkdir -p "$ROOT"
+# The archive's nesting depth is recipe data (strip_components): every
+# node dist nests under one directory. The dist tree's own layout IS the
+# payload layout (POSIX: bin/node + the npm/npx/corepack shims,
+# lib/node_modules/, include/node, share/; windows: node.exe at the
+# root).
+"$TAR" -xf "$ARCHIVE" -C "$ROOT" --strip-components="$STRIP"
+STAGED_INTERPRETER="$ROOT${INTERPRETER}"
+if [ -n "$EXE_SUFFIX" ]; then
+  [ -f "$STAGED_INTERPRETER" ] || { echo "no $INTERPRETER in the staged tree"; exit 1; }
+else
+  [ -x "$STAGED_INTERPRETER" ] || { echo "no executable $INTERPRETER in the staged tree"; exit 1; }
+fi
+
+# The v2.8.22 limnifs writer has no symlink node type (verified
+# 2026-09-29 on the node dist tree: a symlink lands as a 0-byte
+# regular-file node that stat cannot open — silent zeroing; named
+# ecosystem follow-up: the writer should either store link nodes or
+# refuse loudly at write time). The stage therefore dereferences every
+# symlink whose terminal target is a real file INSIDE the staged tree —
+# the name surface stays upstream's, the bytes are the target's (the
+# openjdk precedent). A dangling or tree-escaping link is a named error
+# here, never a silent 0-byte node in the image. (The node dist carries
+# exactly three on POSIX: bin/npm, bin/npx, bin/corepack — the declared
+# shim surface; the windows zip stages real files and takes the same
+# code path as a no-op.)
+step "dereference in-tree symlinks (the writer has no link node type)"
+resolve_link() {
+  # $1 = a symlink's path; prints the terminal real file's absolute path.
+  # Returns 2 on an absolute target (would escape the VFS root), 1 on a
+  # dangling/too-deep chain.
+  local p="$1" t d n=0
+  while [ -L "$p" ]; do
+    n=$((n+1)); [ "$n" -gt 8 ] && return 1
+    t="$(readlink "$p")"
+    case "$t" in /*) return 2 ;; esac
+    d="$(cd "$(dirname "$p")" && cd "$(dirname "$t")" 2>/dev/null && pwd -P)" || return 1
+    p="$d/$(basename "$t")"
+  done
+  [ -f "$p" ] || return 1
+  printf '%s' "$p"
+}
+deref_count=0
+while IFS= read -r link; do
+  rel="${link#"$ROOT"/}"
+  if resolved="$(resolve_link "$link")"; then
+    case "$resolved" in
+      "$ROOT"/*) : ;;
+      *) echo "symlink $rel resolves outside the payload tree: $resolved"; exit 1 ;;
+    esac
+    rm "$link" && cp "$resolved" "$link"
+    deref_count=$((deref_count+1))
+  else
+    rc=$?
+    [ "$rc" = 2 ] && echo "symlink $rel has an ABSOLUTE target (escapes the VFS root): $(readlink "$link")" \
+                  || echo "symlink $rel dangles or loops"
+    exit 1
+  fi
+done < <(find "$ROOT" -type l)
+echo "dereferenced: $deref_count"
+
+# The preload shim rides the image on POSIX legs (the layout's
+# preload_shim grant; the driver arms DYLD_INSERT_LIBRARIES / LD_PRELOAD
+# from it so the jail's host-IO binding survives the exec into node).
+# Declared-but-absent is exit 78 — the file lands in the same pass.
+if [ -n "$DL_EXT" ]; then
+  step "stage the preload shim (lib/tebako/libtfs_preload.$DL_EXT)"
+  [ -n "$PRELOAD_SHIM" ] && [ -f "$PRELOAD_SHIM" ] || {
+    echo "PRELOAD_SHIM (the link-unit's libtfs_preload.$DL_EXT) is required on POSIX legs"; exit 1; }
+  mkdir -p "$ROOT/lib/tebako"
+  cp "$PRELOAD_SHIM" "$ROOT/lib/tebako/libtfs_preload.$DL_EXT"
+  chmod 755 "$ROOT/lib/tebako/libtfs_preload.$DL_EXT"
+fi
+
+# --------------------------------------------------------------- manifest
+step "embed /__tpkg__/manifest.yaml (blob digest zeroed, spec 03 §7)"
+mkdir -p "$ROOT/__tpkg__"
+# The spawn surface block (spec 30 §2): one {name, path} per recipe
+# flavor entrypoints entry — /bin/<name> on POSIX, /<name>.exe on
+# windows. The path carries EXE_SUFFIX on windows — the driver's
+# declared-path existence check opens the literal path. The multi-line
+# value rides ENVIRON into awk: BSD awk (the macOS leg's /usr/bin/awk)
+# rejects -v assignments carrying newlines.
+EP_YAML=""
+for ep in $ENTRYPOINTS; do
+  EP_YAML="$EP_YAML    - {name: \"$ep\", path: \"$(entrypoint_path "$ep")\"}
+"
+done
+sed -e "s|@@VERSION@@|$VERSION|g" \
+    -e "s|@@CREATED@@|$(date -u +%Y-%m-%dT%H:%M:%SZ)|g" \
+    -e "s|@@UPSTREAM_SHA256@@|$SHA256|g" \
+    -e "s|@@UPSTREAM_COMMIT@@|$UPSTREAM_COMMIT|g" \
+    -e "s|@@BLOB_SHA256@@|0000000000000000000000000000000000000000000000000000000000000000|g" \
+    -e "s|@@ENGINE@@|$ENGINE|g" \
+    -e "s|@@ABI_LINE@@|$ABI_LINE|g" \
+    -e "s|@@TRIPLET@@|$TRIPLET|g" \
+    -e "s|@@IMPLEMENTATION@@|$IMPLEMENTATION|g" \
+    "$FEEDSTOCK/manifests/runtime.yaml" |
+  EP_YAML="$EP_YAML" awk '{ if (index($0, "@@ENTRYPOINTS_YAML@@")) printf "%s", ENVIRON["EP_YAML"]; else print }' \
+    > "$ROOT/__tpkg__/manifest.yaml"
+
+step "embed /lib/tebako/layout.yaml (the C3 pair contract)"
+mkdir -p "$ROOT/lib/tebako"
+if [ -n "$DL_EXT" ]; then
+  PRELOAD_DECL="preload_shim: \"lib/tebako/libtfs_preload.$DL_EXT\""
+else
+  PRELOAD_DECL="# (preload_shim omitted — no preload mechanism on windows)"
+fi
+sed -e "s|@@MOUNT_ROOT@@|$MOUNT_ROOT|g" \
+    -e "s|@@API_VERSION@@|$API_VERSION|g" \
+    -e "s|@@INTERPRETER@@|$INTERPRETER|g" \
+    -e "s|@@PRELOAD_SHIM_DECL@@|$PRELOAD_DECL|g" \
+    "$FEEDSTOCK/manifests/layout.yaml" > "$ROOT/lib/tebako/layout.yaml"
+
+# ------------------------------------------------------------------ image
+step "tfs mkimage (the in-process writer — $IMAGE_FORMAT, the recipe's declared format)"
+IMG="$OUT/$STEM.tfs"
+rm -f "$IMG"
+"$TFS_CLI" mkimage --format "$IMAGE_FORMAT" "$ROOT" --output "$IMG"
+sha=$(sha256_of "$IMG")
+echo "image: $IMG"
+echo "sha256: $sha"
+
+# ---------------------------------------------------------------- wrapper
+step "pair the wrapper exe ($STEM$EXE_SUFFIX)"
+[ -n "$WRAPPER_BIN" ] && [ -f "$WRAPPER_BIN" ] || {
+  echo "WRAPPER_BIN (the tebako-runtime-launcher exe) is required — the runtime pair ships both artifacts"; exit 1; }
+EXE_OUT="$OUT/$STEM$EXE_SUFFIX"
+cp "$WRAPPER_BIN" "$EXE_OUT"
+chmod 755 "$EXE_OUT"
+exe_sha=$(sha256_of "$EXE_OUT")
+echo "wrapper: $EXE_OUT"
+echo "sha256: $exe_sha"
+
+# --------------------------------------------------------------- sidecars
+# The trust anchor + the release shard (spec 13 §2a, the de-rendezvous):
+# the leg publishes ONLY its own write-once names — the pair, the
+# sidecars, the shard; the monolithic manifest.json / SHA256SUMS.txt are
+# consumer-side derivations (`tebako-pkg release-index`), never release
+# assets. On signing-enabled lines the shard also DECLARES each
+# artifact's signature block ({keyid, asc} — spec 09 §5; the asc
+# spelling is the factory's to declare, the leg's sign pass produces
+# exactly those assets, and a declaration it does not fulfill fails the
+# release job's audit).
+step "sidecars (.sha256) + the release shard (<stem>.manifest.json)"
+printf '%s  %s\n' "$sha" "$STEM.tfs" > "$IMG.sha256"
+printf '%s  %s\n' "$exe_sha" "$STEM$EXE_SUFFIX" > "$EXE_OUT.sha256"
+# The signature declarations (spec 13 §2a / spec 09 §5): keyid is the
+# signer's 16-lowercase-hex PRIMARY keyid (spec 09 §9), flowed from the
+# TEBAKO_RELEASE_SIGNING_KEYID repo variable — armed + missing/malformed
+# fails the build named, BEFORE anything publishes (a shard that cannot
+# declare never ships).
+EXE_SIG=""
+IMG_SIG=""
+if [ "${TEBAKO_RELEASE_SIGNING_ENABLED:-}" = "true" ]; then
+  KEYID="${TEBAKO_RELEASE_SIGNING_KEYID:-}"
+  if [[ ! "$KEYID" =~ ^[0-9a-f]{16}$ ]]; then
+    echo "TEBAKO_RELEASE_SIGNING_KEYID must be the signer's 16-lowercase-hex PRIMARY keyid (spec 09 §9), got '${KEYID}'"
+    exit 1
+  fi
+  EXE_SIG=$'\n  "signature": {"keyid": "'"$KEYID"$'", "asc": "'"$STEM$EXE_SUFFIX"$'.asc"},'
+  IMG_SIG=$',\n    "signature": {"keyid": "'"$KEYID"$'", "asc": "'"$STEM"$'.tfs.asc"}'
+fi
+ARCHIVE_NAME="$(basename "$URL")"
+RELEASE_REF="${GITHUB_REF_NAME:-local}"
+cat > "$OUT/$STEM.manifest.json" <<EOF
+{
+  "tebako_version": "$WRAPPER_TEBAKO",
+  "contract_era": 2,
+  "contract_version": 2,
+  "node_version": "$VERSION",
+  "implementation": "$IMPLEMENTATION",
+  "capabilities": [],
+  "platform": "$ASSET_PLATFORM",
+  "filename": "$STEM$EXE_SUFFIX",
+  "sha256": "$exe_sha",
+  "size_bytes": $(filesize "$EXE_OUT"),$EXE_SIG
+  "mount_root": "$MOUNT_ROOT",
+  "image_layout": 1,
+  "built_from": {
+    "release": "tamatebako/tebako-runtime-node@$RELEASE_REF",
+    "sources": [
+      {"name": "$ARCHIVE_NAME", "sha256": "$SHA256"}
+    ]
+  },
+  "image": {
+    "filename": "$STEM.tfs",
+    "sha256": "$sha",
+    "size_bytes": $(filesize "$IMG")$IMG_SIG
+  }
+}
+EOF
+echo "shard: $OUT/$STEM.manifest.json"
+
+# -------------------------------------------------------------- read-back
+# A broken pair fails THIS leg, never the publish step: re-read the
+# image with the same tfs CLI that wrote it. The embedded tier-1 manifest
+# must exist and validate, the layout declaration must be present, and
+# every declared entrypoint must exist in the image. (The publish exit-65
+# incident: an embedded manifest that was not valid YAML shipped to the
+# release step.) The CLI's info surface runs the same tpkg manifest model
+# the resolvers parse — build-time parity, no YAML-parser dependency.
+# Path rules (windows leg): the native tfs takes the host image path in
+# native form (cygpath; inert on POSIX), while the VFS paths must reach
+# it verbatim — Git-bash/msys2 argument conversion would otherwise
+# rewrite them to host paths (MSYS2_ARG_CONV_EXCL, inert on POSIX).
+step "read-back: embedded manifest validates, layout + declared entrypoints present"
+native_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+IMG_NATIVE="$(native_path "$IMG")"
+MSYS2_ARG_CONV_EXCL='*' "$TFS_CLI" stat "$IMG_NATIVE" /__tpkg__/manifest.yaml >/dev/null || {
+  echo "read-back FAILED: no /__tpkg__/manifest.yaml in $IMG"; exit 1; }
+MSYS2_ARG_CONV_EXCL='*' "$TFS_CLI" stat "$IMG_NATIVE" /lib/tebako/layout.yaml >/dev/null || {
+  echo "read-back FAILED: no /lib/tebako/layout.yaml in $IMG"; exit 1; }
+echo "read-back: /lib/tebako/layout.yaml present"
+INFO="$(MSYS2_ARG_CONV_EXCL='*' "$TFS_CLI" info --json "$IMG_NATIVE")" || {
+  echo "read-back FAILED: tfs info cannot read $IMG"; exit 1; }
+case "$INFO" in
+  *'"manifest_error"'*)
+    printf '%s\n' "$INFO" | grep '"manifest_error"' >&2
+    echo "read-back FAILED: embedded manifest does not validate" >&2; exit 1 ;;
+esac
+for ep in $ENTRYPOINTS; do
+  p="$(entrypoint_path "$ep")"
+  MSYS2_ARG_CONV_EXCL='*' "$TFS_CLI" stat "$IMG_NATIVE" "$p" >/dev/null || {
+    echo "read-back FAILED: declared entrypoint $p missing from $IMG"; exit 1; }
+  echo "read-back: $p present"
+done
+
+# ------------------------------------------------------ sibling manifest
+step "fill the sibling manifest (release tier: real blob sha)"
+sed -e "s|@@BLOB_SHA256@@|$sha|g" \
+    "$ROOT/__tpkg__/manifest.yaml" > "$OUT/payload-$FLAVOR-$TRIPLET.yaml"
+echo "manifest: $OUT/payload-$FLAVOR-$TRIPLET.yaml"
+
+# -------------------------------------------------------------- smoke
+step "boot smoke (the imaged node answers --version on the host)"
+TMPD="$(mktemp -d)"
+trap 'rm -rf "$TMPD"' EXIT
+# stage verdicts, never swallowed: the extract and the exec each say
+# their named failure (the 2026-08-11 linux leg died mute inside 40 ms).
+if ! out=$("$TFS_CLI" extract "$IMG" -d "$TMPD" 2>&1); then
+  echo "::error::tfs extract failed: $out"
+  exit 1
+fi
+# The declared spawn surface must ride the embedded manifest (spec 30 §2
+# — the driver's bare-name check reads exactly these declarations; the
+# wrapper smoke below exercises only `node`). mkimage re-serializes the
+# manifest THROUGH the tpkg model (serde block style, unquoted scalars,
+# defaulted args_default) — match the model's output shape, not the
+# authored flow style: `name: ["']?<ep>["']?` at a value boundary.
+for ep in $ENTRYPOINTS; do
+  p="$(entrypoint_path "$ep")"
+  grep -Eq "name: [\"']?$ep[\"']?([,}]|$)" "$TMPD/__tpkg__/manifest.yaml" || {
+    echo "::error::embedded manifest declares no entrypoint '$ep'"; exit 1; }
+  grep -Eq "path: [\"']?$p[\"']?([,}]|$)" "$TMPD/__tpkg__/manifest.yaml" || {
+    echo "::error::embedded manifest entrypoint '$ep' carries the wrong path"; exit 1; }
+done
+echo "read-back: all declared entrypoints ride the embedded manifest"
+if ! out=$("$TMPD${INTERPRETER}" --version 2>&1); then
+  echo "::error::node --version failed on the extracted tree: $out"
+  exit 1
+fi
+# A repack's truth gate: the staged dist must be the recipe's version —
+# node --version exits 0 for ANY node, so only a content check catches a
+# wrong-tree stage.
+case "$out" in
+  "v$VERSION"*) : ;;
+  *) echo "::error::boot smoke reported '$out' — the recipe pins v$VERSION"; exit 1 ;;
+esac
+echo "$out" | head -2
+echo "boot smoke OK"
+
+step "wrapper smoke (the shipped pair: wrapper exe + env image)"
+# The exe artifact answers the spec 17 wire directly: no --tebako-image,
+# the bare-keyword entry form — the interpreter starts with the user
+# args. TMPDIR redirects the driver-named exec cache (<temp>/tebako-
+# exec-<image-key>, spec 22 §6) under WORK — TEBAKO_EXEC_CACHE is the
+# driver's EXPORT, never an input; naming TMPDIR is the hermetic shape.
+mkdir -p "$WORK/tmp"
+if ! out=$(MSYS2_ARG_CONV_EXCL='*' env \
+    TEBAKO_RUNTIME_IMAGE="$(native_path "$IMG")" \
+    TMPDIR="$(native_path "$WORK/tmp")" \
+    "$OUT/$STEM$EXE_SUFFIX" --tebako-entry node --version 2>&1); then
+  echo "::error::wrapper smoke failed: $out"
+  exit 1
+fi
+case "$out" in
+  *"v$VERSION"*) : ;;
+  *) echo "::error::wrapper smoke reported '$out' — the recipe pins v$VERSION"; exit 1 ;;
+esac
+echo "$out" | grep -v '^\[tebako\]' | head -2
+echo "wrapper smoke OK"
