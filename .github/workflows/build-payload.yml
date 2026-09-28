@@ -711,7 +711,10 @@ jobs:
       # fast path (registry-only → legs skip, verify passes) plus lint +
       # CodeQL, and the required checks turning green completes the
       # squash merge — zero manual steps. Idempotent across re-runs of
-      # the same tag.
+      # the same tag: the render leaves the working registry dirty, so
+      # restore it before the branch switch (a re-run after the entry
+      # landed would otherwise abort the checkout), and fetch the bot
+      # branch so --force-with-lease has a lease value on a re-publish.
       - name: Publish the registry entry via pull request
         env:
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN }}
@@ -722,6 +725,8 @@ jobs:
           git config user.email "tebako@ribose.com"
           git fetch origin main
           branch="publish/${{ github.ref_name }}-registry"
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
+          git checkout -- tpkg-registry.yaml
           git checkout -b "$branch" origin/main
           cp "$RUNNER_TEMP/registry.yaml" tpkg-registry.yaml
           if git diff --quiet origin/main -- tpkg-registry.yaml; then
