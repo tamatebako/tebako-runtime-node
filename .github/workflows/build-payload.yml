@@ -188,6 +188,16 @@ jobs:
           path-type: minimal
           install: mingw-w64-ucrt-x86_64-libarchive mingw-w64-ucrt-x86_64-gcc-libs
 
+      # The musl legs run on glibc ubuntu hosts (there is no musl
+      # runner): the release's musl binaries (the imager, the wrapper,
+      # and node's own musl build) are musl-linked and the imager's ELF
+      # interp is /lib/ld-musl-<arch>.so.1. The `musl` package ships
+      # exactly that loader and nothing else is needed — no toolchain,
+      # no container; musl binaries then exec natively on the host arch.
+      - name: Install the musl dynamic loader
+        if: contains(matrix.platform.triplet, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl
+
       # Tebakofile's tools block is the toolchain pin SSOT; pins.rb emits
       # TEBAKO_RELEASE, PKG_NAME/PKG_VERSION, the per-platform
       # TFS_ASSET/TFS_SHA256 + LINK_UNIT_ASSET/LINK_UNIT_SHA256 for THIS
