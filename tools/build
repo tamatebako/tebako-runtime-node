@@ -194,6 +194,13 @@ for v in ENGINE IMPLEMENTATION LANG_VERSION ABI_LINE API_VERSION INTERPRETER WRA
   [ -n "$val" ] || { echo "Tebakofile runtime/flavors.$FLAVOR .${v} unreadable (or empty)"; exit 1; }
 done
 [ -n "$ENTRYPOINTS" ] || { echo "Tebakofile flavors.$FLAVOR.entrypoints unreadable (or empty)"; exit 1; }
+# The payload's identity version is the COMPOSITE <node>-<tebako> key
+# the registry carries: install/spawn/compose all assert strict identity
+# (the embedded manifest == the registry row, exit 65 on a mismatch),
+# and one node ships on several tebako product lines — the composite
+# keeps every line addressable (spec 05 §5's variant-component shape;
+# open constraints still match at the numeric core).
+IDENTITY_VERSION="$VERSION-$WRAPPER_TEBAKO"
 # The windows carve-out (optional per-flavor entrypoints_windows_drop):
 # names upstream ships only as .cmd shims on windows (npm, npx,
 # corepack) leave the declared surface on that leg — exec of a .cmd
@@ -357,6 +364,7 @@ for ep in $ENTRYPOINTS; do
 "
 done
 sed -e "s|@@VERSION@@|$VERSION|g" \
+    -e "s|@@IDENTITY_VERSION@@|$IDENTITY_VERSION|g" \
     -e "s|@@CREATED@@|$(date -u +%Y-%m-%dT%H:%M:%SZ)|g" \
     -e "s|@@UPSTREAM_SHA256@@|$SHA256|g" \
     -e "s|@@UPSTREAM_COMMIT@@|$UPSTREAM_COMMIT|g" \

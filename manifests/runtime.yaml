@@ -5,7 +5,13 @@ identity:
   schema_version: 1
   kind: runtime
   name: "node"
-  version: "@@VERSION@@"
+  # The strict-identity rule (install/spawn/compose all assert the
+  # embedded identity == the registry row): the version is the COMPOSITE
+  # <node>-<tebako> key the registry carries — one node ships on several
+  # tebako product lines and every line stays addressable. The plain
+  # node version lives in provides.provides.version (the engine line
+  # pure-language constraints match against).
+  version: "@@IDENTITY_VERSION@@"
   producer: {tool: feedstock-build, tool_version: "1"}
   created: "@@CREATED@@"
   source: {src_sha256: "@@UPSTREAM_SHA256@@", commit: "@@UPSTREAM_COMMIT@@", builder: "local"}
