@@ -43,6 +43,7 @@ RSpec.describe ReleaseAudit do
       wrapper_tebako: "9.9.9"
     flavors:
       official:
+        implementation: node
         upstream: {version: "24.21.0"}
   YAML
 
@@ -63,8 +64,10 @@ RSpec.describe ReleaseAudit do
               - {triplet: x86_64-windows-ucrt, asset_platform: windows-ucrt64, exe_suffix: .exe}
   YAML
 
-  def leg_names(node_version, asset_platform, exe_suffix)
-    stem = "tebako-runtime-#{version}-#{node_version}-#{asset_platform}"
+  # tebako#716: the stem carries the flavor's implementation (the
+  # distribution segment) between the tebako line and the node version.
+  def leg_names(implementation, node_version, asset_platform, exe_suffix)
+    stem = "tebako-runtime-#{version}-#{implementation}-#{node_version}-#{asset_platform}"
     exe = "#{stem}#{exe_suffix}"
     [exe, "#{exe}.sha256", "#{stem}.tfs", "#{stem}.tfs.sha256", "#{stem}.manifest.json"]
   end
@@ -74,7 +77,7 @@ RSpec.describe ReleaseAudit do
   def all_names
     [%w[macos-arm64], %w[macos-x86_64], %w[linux-gnu-x86_64], %w[linux-gnu-arm64],
      %w[linux-musl-x86_64], %w[linux-musl-arm64], ["windows-ucrt64", ".exe"]]
-      .flat_map { |platform, suffix| leg_names("24.21.0", platform, suffix.to_s) }
+      .flat_map { |platform, suffix| leg_names("node", "24.21.0", platform, suffix.to_s) }
   end
 
   def audit_for(asset_names, env_extra: {})
@@ -106,8 +109,8 @@ RSpec.describe ReleaseAudit do
     audit_for(all_names, env_extra: { "TEBAKO_RELEASE_SIGNING_ENABLED" => "true" }) do |audit|
       expected = audit.expected_names(signing: true)
       expect(expected.size).to eq(70)
-      expect(expected).to include("tebako-runtime-9.9.9-24.21.0-macos-arm64.tfs.asc",
-                                  "tebako-runtime-9.9.9-24.21.0-windows-ucrt64.exe.asc")
+      expect(expected).to include("tebako-runtime-9.9.9-node-24.21.0-macos-arm64.tfs.asc",
+                                  "tebako-runtime-9.9.9-node-24.21.0-windows-ucrt64.exe.asc")
     end
   end
 
@@ -118,13 +121,13 @@ RSpec.describe ReleaseAudit do
   end
 
   it "is a subset check, never equality: extra non-monolith names are tolerated" do
-    audit_for(all_names + ["tebako-runtime-9.9.9-24.22.0-macos-arm64.tfs"]) do |audit|
+    audit_for(all_names + ["tebako-runtime-9.9.9-node-24.22.0-macos-arm64.tfs"]) do |audit|
       expect(audit.run).to eq(:clean)
     end
   end
 
   it "fails named, listing the gap, when a leg's asset is missing" do
-    missing = "tebako-runtime-9.9.9-24.21.0-linux-musl-arm64.tfs"
+    missing = "tebako-runtime-9.9.9-node-24.21.0-linux-musl-arm64.tfs"
     audit_for(all_names - [missing]) do |audit|
       expect { audit.run }
         .to output(/Missing asset: #{Regexp.escape(missing)}/).to_stdout
@@ -141,7 +144,7 @@ RSpec.describe ReleaseAudit do
 
   it "fails named on a signing-enabled line when an .asc is missing" do
     signed = all_names + all_names.map { |name| "#{name}.asc" }
-    gap = "tebako-runtime-9.9.9-24.21.0-linux-gnu-x86_64.manifest.json.asc"
+    gap = "tebako-runtime-9.9.9-node-24.21.0-linux-gnu-x86_64.manifest.json.asc"
     audit_for(signed - [gap], env_extra: { "TEBAKO_RELEASE_SIGNING_ENABLED" => "true" }) do |audit|
       expect { audit.run }
         .to output(/Missing asset: #{Regexp.escape(gap)}/).to_stdout

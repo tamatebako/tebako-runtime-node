@@ -11,7 +11,7 @@ point) plus the env image (`.tfs`, mounted — never extracted).
   unofficial-builds.nodejs.org (the docker-node provenance; nodejs.org
   ships no musl build) and carry that origin in their manifest's
   provenance keys — resolution picks them by triplet, never by selector.
-- **artifacts:** `tebako-runtime-<tebako-line>-24.21.0-<platform>[.exe]`
+- **artifacts:** `tebako-runtime-<tebako-line>-<implementation>-<version>-<platform>[.exe]`
   + `.tfs` + `.sha256` sidecars + `<stem>.manifest.json` release shards
   (+ a detached `.asc` per served name on signing-enabled lines), and
   this registry (`tpkg-registry.yaml`) on the repo's default branch
@@ -19,6 +19,20 @@ point) plus the env image (`.tfs`, mounted — never extracted).
   dynamic interpreter, with the link-unit preload shim granted), the
   exec cache on windows (the payload root is declared `home`, so the
   whole tree materializes there)
+
+The artifact name carries the distribution segment
+([tebako#716](https://github.com/tamatebako/tebako/issues/716)): new
+publishes spell
+`tebako-runtime-<tebako-line>-<implementation>-<version>-<platform>`,
+where `<implementation>` is the flavor's identity (`node` today — the
+recipe ships one flavor; a future distribution variant slots its own
+segment in through its flavor block). Releases already published keep
+the segment-less spelling
+(`tebako-runtime-<tebako-line>-<version>-<platform>`) forever: they are
+immutable and sha256-pinned in this registry, and re-running an old tag
+composes that ref's own names, self-consistently. Tooling that reads
+artifact names (the registry mirror, the release gem) accepts both
+spellings.
 
 Consumers' app payloads declare
 `runtime_requirement: {engine: node, constraint: ">= 24"}` on their
