@@ -76,9 +76,15 @@ RSpec.describe RegistryUpdate do
   # machine-readable unit, spec 13 §2a): the exe pair's own fields plus
   # the `image` block the registry mirrors. `name_suffix` mints a second
   # asset claiming the same platform (the duplicate-triplet case).
-  def shard(implementation:, node:, platform:, tebako_version: version, image: :default, name_suffix: "")
+  # `new_era` mints the post-tebako#716 spelling (the implementation
+  # segment in the stem — what tools/build writes from this branch on).
+  def shard(implementation:, node:, platform:, tebako_version: version, image: :default, name_suffix: "", new_era: false)
     exe_suffix = platform.start_with?("windows") ? ".exe" : ""
-    stem = "tebako-runtime-#{tebako_version}-#{node}-#{platform}#{name_suffix}"
+    stem = if new_era
+             "tebako-runtime-#{tebako_version}-#{implementation}-#{node}-#{platform}#{name_suffix}"
+           else
+             "tebako-runtime-#{tebako_version}-#{node}-#{platform}#{name_suffix}"
+           end
     body = { "tebako_version" => tebako_version, "node_version" => node,
              "implementation" => implementation, "platform" => platform,
              "filename" => "#{stem}#{exe_suffix}",
@@ -159,6 +165,24 @@ RSpec.describe RegistryUpdate do
     expect(forked["engine"]).to eq("node")
     expect(forked["versions"].first["implementation"]).to eq("forkline")
     expect(forked["versions"].first["version"]).to eq("24.21.0-9.9.9")
+  end
+
+  # tebako#716: a post-flip shard's filenames carry the implementation
+  # segment — the renderer mirrors the shard's own strings verbatim,
+  # never recomposes a name, so the new spelling flows through untouched
+  # (and the segment-less spellings above keep flowing as published).
+  it "mirrors a post-tebako#716 (implementation-segment) artifact name verbatim" do
+    shards = shards_of({ implementation: "node", node: "24.21.0", platform: "macos-arm64", new_era: true },
+                       { implementation: "node", node: "24.21.0", platform: "windows-ucrt64", new_era: true })
+    doc = YAML.safe_load(render(shards))
+
+    payload = payload_named(doc, "node")
+    v = payload["versions"].find { |x| x["version"] == "24.21.0-9.9.9" }
+    stem = "tebako-runtime-9.9.9-node-24.21.0-macos-arm64"
+    expect(v["platforms"]["aarch64-macos"])
+      .to eq("artifact" => "#{stem}.tfs", "sha256" => Digest::SHA256.hexdigest("BYTES-#{stem}.tfs"))
+    expect(v["platforms"]["x86_64-windows-ucrt"]["artifact"])
+      .to eq("tebako-runtime-9.9.9-node-24.21.0-windows-ucrt64.tfs")
   end
 
   it "upserts into an existing registry, preserving other payloads and withdrawn marks" do
