@@ -25,6 +25,9 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+require "json"
+require "net/http"
+require "uri"
 require "yaml"
 
 # The feedstock's release-shape model (spec 00 §10 — SSOT flow, never a
@@ -168,5 +171,108 @@ module Feedstock
     raise FeedstockError,
           "NAMED FAILURE: #{matrix_path(env)} carries no jobs.build.strategy.matrix block — " \
           "the release tools read the leg set from it"
+  end
+  # The node release monitor (propose-bump shape): checks nodejs.org for
+  # a newer release on the pinned major line and rewrites Tebakofile's
+  # flavor sources to it with fresh SHASUMS256.txt digests — official
+  # dists plus the unofficial-builds musl legs. Never crosses major
+  # lines (the line pin is an owner decision), never writes a partial
+  # file (every new digest resolves before the first byte moves), and
+  # the version anchor is url-derived (`node-v<ver>-…`), never a bare
+  # `version:` key — the Tebakofile's tools pins carry their own
+  # version: keys and must never be caught by a bump.
+  module ReleaseMonitor
+    OFFICIAL_DIST = "https://nodejs.org/dist"
+    UNOFFICIAL_DIST = "https://unofficial-builds.nodejs.org/download/release"
+
+    module_function
+
+    def check_and_bump(recipe_path = File.join(REPO_ROOT, RECIPE_BASENAME))
+      body = File.read(recipe_path)
+      current = current_version(body)
+      candidate = newest_on_line(current)
+      return { action: "current", current: current } if candidate.nil? || candidate == current
+
+      digests = shasums_for(candidate)
+      updated, touched = rewrite(body, current, candidate, digests)
+      File.write(recipe_path, updated)
+      { action: "bump", current: current, candidate: candidate, sources: touched }
+    end
+
+    def current_version(body)
+      body[/node-v(\d+\.\d+\.\d+)-/, 1] ||
+        raise(FeedstockError, "NAMED FAILURE: no node-v<version>- source url in Tebakofile — the url anchor is gone")
+    end
+
+    def parse_shasums(text)
+      text.each_line.each_with_object({}) do |line, map|
+        digest, name = line.split
+        map[name] = digest if digest && name
+      end
+    end
+
+    def rewrite(body, current, candidate, digests)
+      pending = nil
+      touched = 0
+      lines = body.each_line.map do |line|
+        if line.include?("nodejs.org") && line.include?("node-v#{current}-")
+          pending = line[/node-v#{Regexp.escape(current)}-[^\"']+/, 0]
+                     &.gsub("v#{current}", "v#{candidate}")
+          touched += 1
+          next line.gsub("v#{current}", "v#{candidate}")
+        end
+        if pending && (digest_line = line.match(/^\s*sha256: "([0-9a-f]{64})"/))
+          digest = digests.fetch(pending) do
+            raise FeedstockError,
+                  "NAMED FAILURE: v#{candidate} carries no SHASUMS256.txt entry for #{pending} — upstream layout changed"
+          end
+          pending = nil
+          next line.sub(digest_line[1], digest)
+        end
+        line
+      end
+      joined = lines.join
+      joined = joined.sub("version: \"#{current}\"", "version: \"#{candidate}\"")
+      [joined, touched]
+    end
+
+    # --- the network edge (kept last: everything above is specable) ---
+
+    def newest_on_line(current)
+      index = http_get_json("#{OFFICIAL_DIST}/index.json")
+      prefix = "v#{current.split('.').first}."
+      index.each do |entry|
+        next unless entry["version"].to_s.start_with?(prefix)
+
+        version = entry["version"].sub(/\Av/, "")
+        return nil if version == current
+
+        return version
+      end
+      nil
+    end
+
+    def shasums_for(version)
+      %W[#{OFFICIAL_DIST}/v#{version}/SHASUMS256.txt
+         #{UNOFFICIAL_DIST}/v#{version}/SHASUMS256.txt]
+        .flat_map { |url| parse_shasums(http_get(url)) }.reduce(:merge)
+    end
+
+    def http_get(url)
+      uri = URI.parse(url)
+      response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) do |http|
+        http.request(Net::HTTP::Get.new(uri.request_uri))
+      end
+      unless response.is_a?(Net::HTTPSuccess)
+        raise FeedstockError, "NAMED FAILURE: GET #{url} answered #{response.code} — the monitor never guesses past a dead upstream"
+      end
+
+      response.body
+    end
+
+    def http_get_json(url)
+      require "json"
+      JSON.parse(http_get(url))
+    end
   end
 end
