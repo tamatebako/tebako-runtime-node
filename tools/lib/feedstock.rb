@@ -214,8 +214,13 @@ module Feedstock
     def rewrite(body, current, candidate, digests)
       pending = nil
       touched = 0
+      # The url-line match is the FULL authored grammar (url-key +
+      # https + the two upstream hosts), anchored — never a substring
+      # scan of a url-bearing line: a comment mentioning nodejs.org
+      # must never arm a rewrite.
+      source_url = /^\s*url:\s*"https:\/\/(?:unofficial-builds\.)?nodejs\.org\//
       lines = body.each_line.map do |line|
-        if line.include?("nodejs.org") && line.include?("node-v#{current}-")
+        if line =~ source_url && line.include?("node-v#{current}-")
           pending = line[/node-v#{Regexp.escape(current)}-[^\"']+/, 0]
                      &.gsub("v#{current}", "v#{candidate}")
           touched += 1
