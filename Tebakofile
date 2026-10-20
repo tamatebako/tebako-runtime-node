@@ -104,7 +104,7 @@ runtime:
   # wrapper pattern, spec 32's executable requires edges, spec 33's
   # on_runtime composition, and the mount-ancestor routes the flavors
   # mechanism mounts through — plus ruby-4.0.7 press support downstream.
-  wrapper_tebako: "2.8.22"
+  wrapper_tebako: "2.8.47"
   # The wrapper's trust anchor, per tool-platform (the launcher is the
   # shipped runtime pair's process entry point — an unauthenticated
   # download would be a supply-chain hole). Digests are the v2.8.22
