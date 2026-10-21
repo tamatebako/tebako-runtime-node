@@ -69,10 +69,13 @@ flavors:
           url: "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip"
           sha256: "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3"
           strip_components: 1
-        # aarch64-windows-ucrt (node-v24.21.0-win-arm64.zip, upstream
-        # official since the v20 line) lands when the tebako product
-        # ships tebako-runtime-launcher for windows-ucrt-arm64 — the pair
-        # needs its wrapper exe, and v2.8.22 publishes seven platforms.
+        # The win-arm64 zip is upstream-official since the v20 line; the
+        # pair's wrapper exe ships on the product line since v2.8.46 (the
+        # windows-ucrt-arm64 tebako-runtime-launcher).
+        - platform: "aarch64-windows-ucrt"
+          url: "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-arm64.zip"
+          sha256: "3a5c209a5bc59e65b3bc0fa13ed5e166a26bd3d55332847f498b76b037408d61"
+          strip_components: 1
 
 build:
   system: repack          # no compilation: unpack, prune, image
@@ -107,8 +110,8 @@ runtime:
   wrapper_tebako: "2.8.48"
   # The wrapper's trust anchor, per tool-platform (the launcher is the
   # shipped runtime pair's process entry point — an unauthenticated
-  # download would be a supply-chain hole). Digests are the v2.8.22
-  # release's monolith SHA256SUMS entries, fetched 2026-09-29.
+  # download would be a supply-chain hole). Digests are the pinned line's
+  # monolith (SHA256SUMS) entries, re-anchored on every line bump.
   wrapper_sha256:
     macos-arm64: "d13c63d06f47d625ba94a58f126c253605ca29d81a6757b575d8e7abad7bad41"
     macos-x86_64: "ee0f97000b1735b3f82ee54179a274bae0e519c694b4a949d8bf620c9c46ea75"
@@ -117,6 +120,7 @@ runtime:
     linux-musl-x86_64: "75763cc6f12a38cd3d380b8db99e1e14326606c126934637cd68e56cb18f94aa"
     linux-musl-arm64: "57d2443b6f8265d05abbd016691729ea5c9513a51048dca2b337bb5c430d0a4a"
     windows-ucrt64: "8cc050c7626efea5368952cf4d46624e733cc38b646a64c3a460f7f3da94c721"
+    windows-ucrt-arm64: "17ca3af55cdbb4dcd058e827ef0880077b96c2097803500d3447e54a9ceffa3a"
 
 # Factory tools used by tools/build (the imager + the preload shim): the
 # tfs CLI and the link-unit tarball from the tamatebako/tebako release.
@@ -125,7 +129,7 @@ runtime:
 # tools/pins.rb reads this block into $GITHUB_ENV). The tfs pins are
 # cross-checked against the release's SHA256SUMS at fetch time; the
 # link-unit tarballs are NOT in that monolith, so these pins are their
-# single trust anchor (verified against the v2.8.22 downloads 2026-09-29).
+# single trust anchor (verified against the pinned line's downloads).
 tools:
   repo: "tamatebako/tebako"
   release: "v2.8.48"
@@ -149,6 +153,7 @@ tools:
       linux-musl-x86_64: "bc7912dadbe67e71248f0b2730acf0deb341c215cf3f05677578a71b17acbecf"
       linux-musl-arm64: "07480e8373fc657d14aabe8509c0bad77e2a28681ef198292fbf063060d9114e"
       windows-ucrt64: "49ddc07b9bdec9c7386f1f3f21813fc0bcb942f350faf8cb00290e12723a8954"
+      windows-ucrt-arm64: "578965b6e2373e885be8635874cc94baefb0d1a5189ea486b71f4a90fcb9122b"
     link-unit:                       # POSIX legs only; the windows image omits preload_shim
       macos-arm64: "81966bf94e4117a9576602450e0e4b63af37a32cf3538dfd2ffa8d7897cd548e"
       macos-x86_64: "b70546d33bea7e8ef487dee95a7ccc2731ea030b73e1bd42266524374bbae512"
