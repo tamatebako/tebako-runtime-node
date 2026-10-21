@@ -50,10 +50,9 @@ so a wrong-line resolution is a named error, never a segfault.
 > wire directly (`--tebako-entry node …` on the wrapper exe).
 
 Platform coverage follows the tebako launcher's: macOS (arm64, x86_64),
-linux (gnu + musl, x86_64 + arm64), windows (x86_64). The
-aarch64-windows leg lands when the product ships
-`tebako-runtime-launcher` for windows-ucrt-arm64 — upstream's win-arm64
-dist has been official since the v20 line, so only the wrapper is missing.
+linux (gnu + musl, x86_64 + arm64), windows (x86_64 + arm64 — upstream's
+win-arm64 dist, official since the v20 line, paired with the product's
+windows-ucrt-arm64 launcher).
 
 ## Release shape
 

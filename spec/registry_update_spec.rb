@@ -70,6 +70,7 @@ RSpec.describe RegistryUpdate do
               - {triplet: x86_64-linux-musl, asset_platform: linux-musl-x86_64, exe_suffix: ""}
               - {triplet: aarch64-linux-musl, asset_platform: linux-musl-arm64, exe_suffix: ""}
               - {triplet: x86_64-windows-ucrt, asset_platform: windows-ucrt64, exe_suffix: .exe}
+              - {triplet: aarch64-windows-ucrt, asset_platform: windows-ucrt-arm64, exe_suffix: .exe}
   YAML
 
   # A release shard as tools/build writes it (the release's

@@ -4,7 +4,7 @@ name: build-payload
 # the spec 28 §8 implementation axis (official is the only flavor
 # today), platforms aarch64-macos + x86_64-macos + x86_64-linux-gnu +
 # aarch64-linux-gnu + x86_64-linux-musl + aarch64-linux-musl +
-# x86_64-windows-ucrt.
+# x86_64-windows-ucrt + aarch64-windows-ucrt.
 #
 # kind: runtime (spec 28/29): each leg ships the PAIR — the wrapper exe
 # (tebako-runtime-launcher) + the env image (.tfs — limnifs, the recipe's
@@ -129,11 +129,11 @@ jobs:
       fail-fast: false
       matrix:
         # Identity only (which leg, which runner, which archiver, which
-        # flavor). All versions/digests flow from Tebakofile via
-        # tools/pins.rb. flavor is the spec 28 §8 implementation axis —
-        # official (the official Node.js distribution) is the only
-        # flavor today; a future variant slots in beside it. The leg
-        # set here is the SSOT the release tools
+        # msys2 environment, which flavor). All versions/digests flow from
+        # Tebakofile via tools/pins.rb. flavor is the spec 28 §8
+        # implementation axis — official (the official Node.js
+        # distribution) is the only flavor today; a future variant slots
+        # in beside it. The leg set here is the SSOT the release tools
         # (tools/audit_release.rb, tools/registry_update.rb via
         # tools/lib/feedstock.rb) read the (flavor × platform) shape
         # from.
@@ -175,21 +175,43 @@ jobs:
             exe_suffix: .exe
             # bsdtar (ucrt64 libarchive) reads the windows zip; GNU tar cannot.
             tar: /d/a/_temp/msys64/ucrt64/bin/bsdtar.exe
+            msystem: ucrt64
+            msys_packages: mingw-w64-ucrt-x86_64-libarchive mingw-w64-ucrt-x86_64-gcc-libs
+          - triplet: aarch64-windows-ucrt
+            asset_platform: windows-ucrt-arm64
+            runs_on: windows-11-arm
+            exe_suffix: .exe
+            # The arm64 leg runs the runner's NATIVE msys2 environment
+            # (clangarm64 — MSYS2's windows-on-arm recipe, the
+            # tebako-runtime-ruby#176 precedent); its libarchive reads the
+            # zip the same way.
+            tar: /d/a/_temp/msys64/clangarm64/bin/bsdtar.exe
+            msystem: clangarm64
+            msys_packages: mingw-w64-clang-aarch64-libarchive mingw-w64-clang-aarch64-gcc-libs
+            # ruby/setup-ruby carries no 3.3 arm64 build (RubyInstaller
+            # ships arm64 from 3.4): the tag-time release tooling rides
+            # 3.4 on this leg (the windows-11-arm image's hosted Ruby is
+            # 3.4-native anyway — pins.rb never leaves the hosted one).
+            tool_ruby: "3.4"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # bsdtar is the only msys2 need: the recipe's windows source is a
-      # zip and GNU tar cannot read it (the macOS leg uses system tar).
-      # gcc-libs rides along for any ucrt64 toolchain binary that still
-      # wants the gcc-runtime DLLs; the pinned tebako binaries themselves
-      # are statically linked (the release's ship gate audits PE imports).
-      - name: Set up MSys2 (ucrt64 bsdtar + gcc runtime)
-        if: matrix.platform.triplet == 'x86_64-windows-ucrt'
+      # bsdtar is the only msys2 need: the recipe's windows sources are
+      # zips and GNU tar cannot read them (the macOS leg uses system tar).
+      # Each windows leg installs its runner's own environment (the leg's
+      # msystem/msys_packages declaration): ucrt64 on the x86_64 runner,
+      # clangarm64 — MSYS2's native windows-on-arm recipe, the
+      # tebako-runtime-ruby#176 precedent — on windows-11-arm. gcc-libs
+      # rides along for any toolchain binary that still wants the
+      # gcc-runtime DLLs; the pinned tebako binaries themselves are
+      # statically linked (the release's ship gate audits PE imports).
+      - name: Set up MSys2 (bsdtar + gcc runtime)
+        if: contains(matrix.platform.triplet, 'windows')
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
-          msystem: ucrt64
+          msystem: ${{ matrix.platform.msystem }}
           path-type: minimal
-          install: mingw-w64-ucrt-x86_64-libarchive mingw-w64-ucrt-x86_64-gcc-libs
+          install: ${{ matrix.platform.msys_packages }}
 
       # The musl legs run on glibc ubuntu hosts (there is no musl
       # runner): the release's musl binaries (the imager, the wrapper,
@@ -276,7 +298,7 @@ jobs:
       # ships unsigned, byte-identically to today (spec 00 invariant 7 —
       # §7.4 gate-off parity).
       - name: Arm check — Windows signing (spec 34 §4)
-        if: matrix.platform.triplet == 'x86_64-windows-ucrt'
+        if: contains(matrix.platform.triplet, 'windows')
         id: signgate
         shell: bash
         env:
@@ -506,8 +528,8 @@ jobs:
         # outputs are chowned back so later host steps can write).
         run: |
           case "${{ matrix.platform.triplet }}" in
-            x86_64-windows-ucrt)
-              export PATH="/d/a/_temp/msys64/ucrt64/bin:/c/Program Files/Git/usr/bin:/c/Program Files/Git/cmd:/c/Windows/System32"
+            *-windows-ucrt)
+              export PATH="/d/a/_temp/msys64/${{ matrix.platform.msystem }}/bin:/c/Program Files/Git/usr/bin:/c/Program Files/Git/cmd:/c/Windows/System32"
               tools/build
               ;;
             *linux-musl)
@@ -536,11 +558,14 @@ jobs:
           path: out/${{ matrix.flavor }}-${{ matrix.platform.triplet }}/
           retention-days: 7
 
+      # The tag-time release tooling (publish + sign) needs a Ruby; the
+      # leg's tool_ruby declaration covers the one runner whose hosted
+      # line differs (windows-11-arm: no 3.3 arm64 build exists).
       - name: Setup Ruby for the release tooling
         if: startsWith(github.ref, 'refs/tags/')
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
-          ruby-version: '3.3'
+          ruby-version: ${{ matrix.platform.tool_ruby || '3.3' }}
           bundler-cache: true
 
       # Spec 13 §2a (the de-rendezvous): the leg that built a

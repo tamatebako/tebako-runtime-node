@@ -36,7 +36,7 @@ RSpec.describe ReleaseAudit do
 
   # The feedstock fixtures: a mini Tebakofile + a mini build-payload
   # workflow whose matrix block mirrors the real one's shape (1 flavor ×
-  # 7 platforms). Feedstock parses these; the expected names below are
+  # 8 platforms). Feedstock parses these; the expected names below are
   # written out literally, so a misread fixture fails the clean case.
   RECIPE_FIXTURE = <<~YAML
     runtime:
@@ -62,6 +62,7 @@ RSpec.describe ReleaseAudit do
               - {triplet: x86_64-linux-musl, asset_platform: linux-musl-x86_64, exe_suffix: ""}
               - {triplet: aarch64-linux-musl, asset_platform: linux-musl-arm64, exe_suffix: ""}
               - {triplet: x86_64-windows-ucrt, asset_platform: windows-ucrt64, exe_suffix: .exe}
+              - {triplet: aarch64-windows-ucrt, asset_platform: windows-ucrt-arm64, exe_suffix: .exe}
   YAML
 
   # tebako#716: the stem carries the flavor's implementation (the
@@ -72,11 +73,11 @@ RSpec.describe ReleaseAudit do
     [exe, "#{exe}.sha256", "#{stem}.tfs", "#{stem}.tfs.sha256", "#{stem}.manifest.json"]
   end
 
-  # The whole expected matrix, written out: 1 flavor × 7 platforms ×
-  # the pair + sidecars + shard = 35 write-once names (spec 13 §2a).
+  # The whole expected matrix, written out: 1 flavor × 8 platforms ×
+  # the pair + sidecars + shard = 40 write-once names (spec 13 §2a).
   def all_names
     [%w[macos-arm64], %w[macos-x86_64], %w[linux-gnu-x86_64], %w[linux-gnu-arm64],
-     %w[linux-musl-x86_64], %w[linux-musl-arm64], ["windows-ucrt64", ".exe"]]
+     %w[linux-musl-x86_64], %w[linux-musl-arm64], ["windows-ucrt64", ".exe"], ["windows-ucrt-arm64", ".exe"]]
       .flat_map { |platform, suffix| leg_names("node", "24.21.0", platform, suffix.to_s) }
   end
 
@@ -101,14 +102,14 @@ RSpec.describe ReleaseAudit do
   it "derives the expected matrix from the workflow matrix x recipe pins" do
     audit_for(all_names) do |audit|
       expect(audit.expected_names).to match_array(all_names)
-      expect(audit.expected_names.size).to eq(35)
+      expect(audit.expected_names.size).to eq(40)
     end
   end
 
   it "adds every served name's own .asc when the line signs (spec 09 §5's no-fold rule)" do
     audit_for(all_names, env_extra: { "TEBAKO_RELEASE_SIGNING_ENABLED" => "true" }) do |audit|
       expected = audit.expected_names(signing: true)
-      expect(expected.size).to eq(70)
+      expect(expected.size).to eq(80)
       expect(expected).to include("tebako-runtime-9.9.9-node-24.21.0-macos-arm64.tfs.asc",
                                   "tebako-runtime-9.9.9-node-24.21.0-windows-ucrt64.exe.asc")
     end

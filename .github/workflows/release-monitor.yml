@@ -71,7 +71,7 @@ jobs:
           body: |
             Automated pin bump by the release monitor: node **${{ fromJSON(steps.monitor.outputs.verdict).candidate }}** is the newest release on the pinned line (was ${{ fromJSON(steps.monitor.outputs.verdict).current }}).
 
-            - all flavor sources moved: the official dists, the unofficial-builds musl legs, the windows zip
+            - all flavor sources moved: the official dists, the unofficial-builds musl legs, the windows zips
             - digests re-pinned from both upstream SHASUMS256.txt files
             - no major-line crossing; no other `version:` key touched (the tools pins stay)
 
