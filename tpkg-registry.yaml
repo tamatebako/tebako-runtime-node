@@ -100,5 +100,34 @@ payloads:
         sha256: fca112872ae49baf3a0650224863fe18de8a04b124fb14fa5bfb96b604aec1d9
     release:
       ref: tfs:github:tamatebako/tebako-runtime-node:v2.8.48
+  - version: 24.22.0-2.8.49
+    implementation: node
+    platforms:
+      aarch64-linux-gnu:
+        artifact: tebako-runtime-2.8.49-node-24.22.0-linux-gnu-arm64.tfs
+        sha256: 258350df400fc467e9a4e0c83224e7cd7c8e7e07bc716b65fe25b9d095fdedc1
+      aarch64-linux-musl:
+        artifact: tebako-runtime-2.8.49-node-24.22.0-linux-musl-arm64.tfs
+        sha256: d7f31c43690e61f2ad90084bb9777e45a089b1c12f515d284430737a6b8320e2
+      aarch64-macos:
+        artifact: tebako-runtime-2.8.49-node-24.22.0-macos-arm64.tfs
+        sha256: 98b753678801a80e3b9610937d7e987a33f2a34d07ac623fbac510034fe07825
+      aarch64-windows-ucrt:
+        artifact: tebako-runtime-2.8.49-node-24.22.0-windows-ucrt-arm64.tfs
+        sha256: c871e4be2be0284122a4ca28730ffcd836be5654726fce67bdfa9d4c894270dc
+      x86_64-linux-gnu:
+        artifact: tebako-runtime-2.8.49-node-24.22.0-linux-gnu-x86_64.tfs
+        sha256: 868137bcdf6ade6167d5641026c544b1f5998784bb5daec2bd4090a7d2ca5b58
+      x86_64-linux-musl:
+        artifact: tebako-runtime-2.8.49-node-24.22.0-linux-musl-x86_64.tfs
+        sha256: 4eebc6298d6559216f560685f5e2fa7835a47b7b7615bde0b6f2dcc6ed2a37a4
+      x86_64-macos:
+        artifact: tebako-runtime-2.8.49-node-24.22.0-macos-x86_64.tfs
+        sha256: 8adc20dc771c4efaedebf8043cbc53aa54190c461bd55870c59883e5fae13002
+      x86_64-windows-ucrt:
+        artifact: tebako-runtime-2.8.49-node-24.22.0-windows-ucrt64.tfs
+        sha256: 147bdd2bb083324141be12bdeab81cc58a740494255f70f4fcec4b6d1884c062
+    release:
+      ref: tfs:github:tamatebako/tebako-runtime-node:v2.8.49
   engine: node
-  default: 24.22.0-2.8.48
+  default: 24.22.0-2.8.49
