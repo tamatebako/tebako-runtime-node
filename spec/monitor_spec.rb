@@ -83,4 +83,50 @@ RSpec.describe "Feedstock::ReleaseMonitor" do
     expect { Feedstock::ReleaseMonitor.rewrite(tebakofile_snippet, "24.21.0", "24.22.0", {}) }
       .to raise_error(Feedstock::FeedstockError, /no SHASUMS256.txt entry for node-v24\.22\.0-darwin-arm64\.tar\.gz/)
   end
+
+  describe "the candidate walk (the network edge's decision, stubbed)" do
+    require "tempfile"
+
+    def with_recipe
+      file = Tempfile.new(["Tebakofile", ".yaml"])
+      file.write(tebakofile_snippet)
+      file.flush
+      yield file.path
+    ensure
+      file.close!
+    end
+
+    it "walks past a release one dist has not published yet" do
+      allow(Feedstock::ReleaseMonitor).to receive(:newer_on_line).and_return(%w[24.22.1 24.22.0])
+      allow(Feedstock::ReleaseMonitor).to receive(:shasums_for).with("24.22.1")
+        .and_raise(Feedstock::UpstreamMissing, "GET https://example.test/x answered 404")
+      allow(Feedstock::ReleaseMonitor).to receive(:shasums_for).with("24.22.0").and_return(shasums)
+      with_recipe do |path|
+        verdict = Feedstock::ReleaseMonitor.check_and_bump(path)
+        expect(verdict[:action]).to eq("bump")
+        expect(verdict[:candidate]).to eq("24.22.0")
+        expect(File.read(path)).to include("v24.22.0")
+      end
+    end
+
+    it "holds the current pin when upstream cannot serve a complete candidate" do
+      allow(Feedstock::ReleaseMonitor).to receive(:newer_on_line).and_return(%w[24.22.1])
+      allow(Feedstock::ReleaseMonitor).to receive(:shasums_for).and_return(shasums)
+      with_recipe do |path|
+        before = File.read(path)
+        verdict = Feedstock::ReleaseMonitor.check_and_bump(path)
+        expect(verdict[:action]).to eq("hold")
+        expect(verdict[:newest]).to eq("24.22.1")
+        expect(verdict[:held].first["missing"]).to include("node-v24.22.1-linux-x64-musl.tar.gz")
+        expect(File.read(path)).to eq(before), "a hold never rewrites the recipe"
+      end
+    end
+
+    it "names the version-substituted asset set the candidate must cover" do
+      expect(Feedstock::ReleaseMonitor.pending_assets(tebakofile_snippet, "24.21.0", "24.22.0")).to contain_exactly(
+        "node-v24.22.0-darwin-arm64.tar.gz",
+        "node-v24.22.0-linux-x64-musl.tar.gz"
+      )
+    end
+  end
 end

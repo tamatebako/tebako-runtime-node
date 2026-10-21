@@ -40,6 +40,14 @@ require "yaml"
 module Feedstock
   class FeedstockError < StandardError; end
 
+  # A candidate release that one of the two upstream dists has not
+  # published yet (a 404 on its SHASUMS256.txt). Upstream LAG, not a
+  # defect: the monitor holds the current pin and reports the candidate
+  # by name instead of failing the daily run — a monitor that cannot
+  # distinguish "upstream is late" from "upstream is broken" goes red
+  # every day until the dists agree, which teaches everyone to ignore it.
+  class UpstreamMissing < FeedstockError; end
+
   REPO_ROOT = File.expand_path("../..", __dir__).freeze
   RECIPE_BASENAME = "Tebakofile"
   MATRIX_RELPATH = ".github/workflows/build-payload.yml"
@@ -190,13 +198,45 @@ module Feedstock
     def check_and_bump(recipe_path = File.join(REPO_ROOT, RECIPE_BASENAME))
       body = File.read(recipe_path)
       current = current_version(body)
-      candidate = newest_on_line(current)
-      return { action: "current", current: current } if candidate.nil? || candidate == current
+      candidates = newer_on_line(current)
+      return { action: "current", current: current } if candidates.empty?
 
-      digests = shasums_for(candidate)
-      updated, touched = rewrite(body, current, candidate, digests)
-      File.write(recipe_path, updated)
-      { action: "bump", current: current, candidate: candidate, sources: touched }
+      # Walk the line newest-first and take the newest release BOTH dists
+      # can serve in full. A candidate whose SHASUMS 404s, or whose
+      # SHASUMS lacks one of the recipe's own assets (the unofficial
+      # musl legs routinely lag the official dists), is a HOLD for that
+      # candidate — never a partial rewrite, never a dead-end failure.
+      held = []
+      candidates.each do |candidate|
+        digests = begin
+          shasums_for(candidate)
+        rescue UpstreamMissing => e
+          held << { "candidate" => candidate, "missing" => [e.message] }
+          next
+        end
+        missing = uncovered(body, current, candidate, digests)
+        unless missing.empty?
+          held << { "candidate" => candidate, "missing" => missing }
+          next
+        end
+        updated, touched = rewrite(body, current, candidate, digests)
+        File.write(recipe_path, updated)
+        return { action: "bump", current: current, candidate: candidate, sources: touched }
+      end
+      { action: "hold", current: current, newest: candidates.first, held: held }
+    end
+
+    # Every source asset the recipe names, version-substituted to the
+    # candidate — the completeness set a candidate's SHASUMS must cover.
+    def pending_assets(body, current, candidate)
+      body.scan(/node-v#{Regexp.escape(current)}-([^"'\s]+)/).flatten.map do |suffix|
+        "node-v#{candidate}-#{suffix}"
+      end.uniq
+    end
+
+    # The candidate's uncovered assets, in recipe order (empty = complete).
+    def uncovered(body, current, candidate, digests)
+      pending_assets(body, current, candidate).reject { |name| digests.key?(name) }
     end
 
     def current_version(body)
@@ -244,17 +284,24 @@ module Feedstock
     # --- the network edge (kept last: everything above is specable) ---
 
     def newest_on_line(current)
+      newer_on_line(current).first
+    end
+
+    # The line's releases NEWER than `current`, newest-first, stable
+    # releases only (a prerelease is never a bump candidate).
+    def newer_on_line(current)
       index = http_get_json("#{OFFICIAL_DIST}/index.json")
       prefix = "v#{current.split('.').first}."
-      index.each do |entry|
-        next unless entry["version"].to_s.start_with?(prefix)
+      index.filter_map do |entry|
+        version = entry["version"].to_s
+        next unless version.start_with?(prefix)
 
-        version = entry["version"].sub(/\Av/, "")
-        return nil if version == current
+        version = version.sub(/\Av/, "")
+        next unless version.match?(/\A\d+\.\d+\.\d+\z/)
+        next unless Gem::Version.new(version) > Gem::Version.new(current)
 
-        return version
-      end
-      nil
+        version
+      end.sort_by { |version| Gem::Version.new(version) }.reverse
     end
 
     def shasums_for(version)
@@ -268,6 +315,10 @@ module Feedstock
       response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) do |http|
         http.request(Net::HTTP::Get.new(uri.request_uri))
       end
+      # 404 is upstream LAG on a per-version artifact (the caller decides
+      # whether that candidate is skippable); every other non-2xx is the
+      # dead-upstream failure the monitor never guesses past.
+      raise UpstreamMissing, "GET #{url} answered 404 — not published upstream" if response.code == "404"
       unless response.is_a?(Net::HTTPSuccess)
         raise FeedstockError, "NAMED FAILURE: GET #{url} answered #{response.code} — the monitor never guesses past a dead upstream"
       end
