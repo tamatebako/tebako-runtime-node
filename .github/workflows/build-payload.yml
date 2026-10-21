@@ -173,8 +173,6 @@ jobs:
             asset_platform: windows-ucrt64
             runs_on: windows-latest
             exe_suffix: .exe
-            # bsdtar (ucrt64 libarchive) reads the windows zip; GNU tar cannot.
-            tar: /d/a/_temp/msys64/ucrt64/bin/bsdtar.exe
             msystem: ucrt64
             msys_packages: mingw-w64-ucrt-x86_64-libarchive mingw-w64-ucrt-x86_64-gcc-libs
           - triplet: aarch64-windows-ucrt
@@ -185,7 +183,6 @@ jobs:
             # (clangarm64 — MSYS2's windows-on-arm recipe, the
             # tebako-runtime-ruby#176 precedent); its libarchive reads the
             # zip the same way.
-            tar: /d/a/_temp/msys64/clangarm64/bin/bsdtar.exe
             msystem: clangarm64
             msys_packages: mingw-w64-clang-aarch64-libarchive mingw-w64-clang-aarch64-gcc-libs
             # ruby/setup-ruby carries no 3.3 arm64 build (RubyInstaller
@@ -529,7 +526,13 @@ jobs:
         run: |
           case "${{ matrix.platform.triplet }}" in
             *-windows-ucrt)
-              export PATH="/d/a/_temp/msys64/${{ matrix.platform.msystem }}/bin:/c/Program Files/Git/usr/bin:/c/Program Files/Git/cmd:/c/Windows/System32"
+              # The msys2 root derives from $RUNNER_TEMP, never a literal
+              # drive: setup-msys2 installs under it and the arm64 runner
+              # maps C: where the x64 one maps D:. The env's own bsdtar
+              # reads the zip (GNU tar cannot).
+              msys_bin="$(cygpath "$RUNNER_TEMP")/msys64/${{ matrix.platform.msystem }}/bin"
+              export PATH="$msys_bin:/c/Program Files/Git/usr/bin:/c/Program Files/Git/cmd:/c/Windows/System32"
+              export TAR="$msys_bin/bsdtar.exe"
               tools/build
               ;;
             *linux-musl)
