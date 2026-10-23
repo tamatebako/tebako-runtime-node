@@ -156,6 +156,30 @@ RSpec.describe RegistryUpdate do
     expect(payload["default"]).to eq("24.21.0-9.9.9")
   end
 
+  it "mirrors the shard's image.blksum pin into the platform row (spec 39 §3)" do
+    stem = "tebako-runtime-9.9.9-24.21.0-macos-arm64"
+    blk_sha = Digest::SHA256.hexdigest("BYTES-#{stem}.tfs.blksum.json")
+    image = { "filename" => "#{stem}.tfs",
+              "sha256" => Digest::SHA256.hexdigest("BYTES-#{stem}.tfs"),
+              "blksum" => { "filename" => "#{stem}.tfs.blksum.json", "sha256" => blk_sha } }
+    shards = shards_of({ implementation: "node", node: "24.21.0", platform: "macos-arm64", image: image })
+    doc = YAML.safe_load(render(shards))
+
+    row = payload_named(doc, "node")["versions"].first["platforms"]["aarch64-macos"]
+    expect(row["artifact"]).to eq("#{stem}.tfs")
+    expect(row["blksum"]).to eq("filename" => "#{stem}.tfs.blksum.json", "sha256" => blk_sha)
+  end
+
+  it "refuses a malformed image.blksum block by name (never a half-rendered pin)" do
+    stem = "tebako-runtime-9.9.9-24.21.0-macos-arm64"
+    image = { "filename" => "#{stem}.tfs",
+              "sha256" => Digest::SHA256.hexdigest("BYTES-#{stem}.tfs"),
+              "blksum" => { "filename" => "#{stem}.tfs.blksum.json" } }
+    shards = shards_of({ implementation: "node", node: "24.21.0", platform: "macos-arm64", image: image })
+
+    expect { render(shards) }.to raise_error(/image\.blksum must carry \{filename, sha256\}/)
+  end
+
   it "names a non-default implementation's payload with its suffix (the spec 28 §8 flavor axis)" do
     shards = shards_of({ implementation: "node", node: "24.21.0", platform: "macos-arm64" },
                        { implementation: "forkline", node: "24.21.0", platform: "linux-gnu-x86_64" })
