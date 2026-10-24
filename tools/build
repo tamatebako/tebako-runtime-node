@@ -605,10 +605,14 @@ if [ -z "$EXE_SUFFIX" ]; then
     echo "::error::npm smoke failed: $out"
     exit 1
   fi
-  case "$out" in
+  # Assert on npm's OWN line: the driver's log lines carry version-shaped
+  # numbers of their own (`[tebako] … v2.8.61 …`), so a semver match over
+  # the whole output would pass a run that never reached npm.
+  npm_out="$(printf '%s\n' "$out" | grep -v '^\[tebako\]' || true)"
+  case "$npm_out" in
     *[0-9].[0-9]*) : ;;
-    *) echo "::error::npm smoke reported '$out' — want npm's own semver"; exit 1 ;;
+    *) echo "::error::npm smoke reported '$npm_out' — want npm's own semver"; exit 1 ;;
   esac
-  echo "$out" | grep -v '^\[tebako\]' | head -2
+  printf '%s\n' "$npm_out" | head -2
   echo "npm smoke OK"
 fi
