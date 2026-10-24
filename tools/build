@@ -295,19 +295,19 @@ else
   [ -x "$STAGED_INTERPRETER" ] || { echo "no executable $INTERPRETER in the staged tree"; exit 1; }
 fi
 
-# The v2.8.22 limnifs writer has no symlink node type (verified
-# 2026-09-29 on the node dist tree: a symlink lands as a 0-byte
-# regular-file node that stat cannot open — silent zeroing; named
-# ecosystem follow-up: the writer should either store link nodes or
-# refuse loudly at write time). The stage therefore dereferences every
-# symlink whose terminal target is a real file INSIDE the staged tree —
-# the name surface stays upstream's, the bytes are the target's (the
-# openjdk precedent). A dangling or tree-escaping link is a named error
-# here, never a silent 0-byte node in the image. (The node dist carries
-# exactly three on POSIX: bin/npm, bin/npx, bin/corepack — the declared
-# shim surface; the windows zip stages real files and takes the same
-# code path as a no-op.)
-step "dereference in-tree symlinks (the writer has no link node type)"
+# Symlinks are IMAGE CONTENT again (tebako 2.8.60, spec 11 §9): the
+# reader carries the three link verbs (lstat reports the entry, readlink
+# returns the target, stat/open follow through the mount router), so the
+# stage keeps upstream's links instead of copying the target over them.
+#
+# The validation stays, because the failure it catches is a *payload*
+# mistake rather than a writer one: an absolute target (which would leave
+# the image's tree and route through the host) or a dangling/looping
+# chain is a named error here, never a surprise at run time. The node
+# dist carries exactly three links on POSIX — bin/npm, bin/npx,
+# bin/corepack, the declared shim surface — and the windows zip stages
+# real files, taking this path as a no-op.
+step "validate in-tree symlinks (stored as links since 2.8.60)"
 resolve_link() {
   # $1 = a symlink's path; prints the terminal real file's absolute path.
   # Returns 2 on an absolute target (would escape the VFS root), 1 on a
@@ -323,7 +323,7 @@ resolve_link() {
   [ -f "$p" ] || return 1
   printf '%s' "$p"
 }
-deref_count=0
+link_count=0
 while IFS= read -r link; do
   rel="${link#"$ROOT"/}"
   if resolved="$(resolve_link "$link")"; then
@@ -331,8 +331,7 @@ while IFS= read -r link; do
       "$ROOT"/*) : ;;
       *) echo "symlink $rel resolves outside the payload tree: $resolved"; exit 1 ;;
     esac
-    rm "$link" && cp "$resolved" "$link"
-    deref_count=$((deref_count+1))
+    link_count=$((link_count+1))
   else
     rc=$?
     [ "$rc" = 2 ] && echo "symlink $rel has an ABSOLUTE target (escapes the VFS root): $(readlink "$link")" \
@@ -340,7 +339,7 @@ while IFS= read -r link; do
     exit 1
   fi
 done < <(find "$ROOT" -type l)
-echo "dereferenced: $deref_count"
+echo "in-tree links kept: $link_count"
 
 # The preload shim rides the image on POSIX legs (the layout's
 # preload_shim grant; the driver arms DYLD_INSERT_LIBRARIES / LD_PRELOAD
@@ -589,3 +588,27 @@ case "$out" in
 esac
 echo "$out" | grep -v '^\[tebako\]' | head -2
 echo "wrapper smoke OK"
+
+# The declared npm entry, on POSIX only (the windows recipe drops npm/npx/
+# corepack from its surface — they ship as .cmd shims there). This is the
+# smoke that would have caught the dereference era: npm's own CLI resolves
+# `../lib/cli.js` relative to the file node runs, which is only correct
+# from `lib/node_modules/npm/bin/npm-cli.js` — where upstream's `bin/npm`
+# LINK points. A flattened copy resolves it against `bin/` and dies with
+# MODULE_NOT_FOUND (tebako#870).
+if [ -z "$EXE_SUFFIX" ]; then
+  step "wrapper smoke: the declared npm entry (the symlink surface)"
+  if ! out=$(MSYS2_ARG_CONV_EXCL='*' env \
+      TEBAKO_RUNTIME_IMAGE="$(native_path "$IMG")" \
+      TMPDIR="$(native_path "$WORK/tmp")" \
+      "$OUT/$STEM$EXE_SUFFIX" --tebako-entry npm --version 2>&1); then
+    echo "::error::npm smoke failed: $out"
+    exit 1
+  fi
+  case "$out" in
+    *[0-9].[0-9]*) : ;;
+    *) echo "::error::npm smoke reported '$out' — want npm's own semver"; exit 1 ;;
+  esac
+  echo "$out" | grep -v '^\[tebako\]' | head -2
+  echo "npm smoke OK"
+fi
