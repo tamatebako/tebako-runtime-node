@@ -54,6 +54,15 @@ jobs:
       # add-paths guard keeps the commit to the recipe alone: never the
       # runner's .bundle config (bundler-cache writes one), never the
       # run's monitor-result.json.
+      # The fleet identity (tebako-release#3): the tebako-fleet App's
+      # installation token — own rate budget, and app-pushed branches
+      # fire pull_request CI.
+      - name: Mint the fleet token
+        id: fleet
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.TEBAKO_CI_APP_ID }}
+          private-key: ${{ secrets.TEBAKO_CI_APP_PRIVATE_KEY }}
       - name: open the bump pull request
         if: fromJSON(steps.monitor.outputs.verdict).action == 'bump'
         uses: peter-evans/create-pull-request@v7
@@ -61,10 +70,10 @@ jobs:
         # workflows (GitHub's anti-recursion rule) — the lint gate's
         # required context then never reports and the PR blocks forever
         # (the 24.22.0 bump needed an admin merge for exactly this).
-        # The suite registry PRs' established pattern: author with the
-        # org PAT so CI runs like on any human PR.
+        # Author with the fleet App's token so CI runs like on any human
+        # PR.
         with:
-          token: ${{ secrets.TEBAKO_CI_PAT_TOKEN }}
+          token: ${{ steps.fleet.outputs.token }}
           branch: monitor/node-pin
           add-paths: Tebakofile
           title: "node ${{ fromJSON(steps.monitor.outputs.verdict).candidate }} (release monitor)"
