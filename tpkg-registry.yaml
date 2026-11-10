@@ -293,5 +293,58 @@ payloads:
           sha256: f495ed75ade67083d3080fa8ffb080299c380ab1e1e3803a1b64a221260193ba
     release:
       ref: tfs:github:tamatebako/tebako-runtime-node:v2.8.64
+  - version: 24.22.2-2.8.75
+    implementation: node
+    platforms:
+      aarch64-linux-gnu:
+        artifact: tebako-runtime-2.8.75-node-24.22.2-linux-gnu-arm64.tfs
+        sha256: 32ab250bb923f113afd10d79e55d4cae1d6ac43afb439f6342b0a14fe23e3700
+        blksum:
+          filename: tebako-runtime-2.8.75-node-24.22.2-linux-gnu-arm64.tfs.blksum.json
+          sha256: 540dd71375f5b09f2c4f39b728831836a873a77203b726c90e1cc30aad3e45b6
+      aarch64-linux-musl:
+        artifact: tebako-runtime-2.8.75-node-24.22.2-linux-musl-arm64.tfs
+        sha256: 16c8f39229e4d8de7319a87afcf9aad6142417b01ac5b9a6903cf7c8fe6ea687
+        blksum:
+          filename: tebako-runtime-2.8.75-node-24.22.2-linux-musl-arm64.tfs.blksum.json
+          sha256: 6157c278e75c5ce0a5d2b6ff5f64d3cc29c608fe1827041f01a8386aaedf789a
+      aarch64-macos:
+        artifact: tebako-runtime-2.8.75-node-24.22.2-macos-arm64.tfs
+        sha256: 352d7b964e8d5258817ae7431e774532c1be691c3fa55449e00d8db81ed51c5f
+        blksum:
+          filename: tebako-runtime-2.8.75-node-24.22.2-macos-arm64.tfs.blksum.json
+          sha256: 80221a71881826254a7ea7a37fc98b2262df2d2a2b8477b9abf96ded4d992fc3
+      aarch64-windows-ucrt:
+        artifact: tebako-runtime-2.8.75-node-24.22.2-windows-ucrt-arm64.tfs
+        sha256: eb00cb2fa149d31d763bf24791596a3e67d610a421cc4356714e0f3aa8a5d98c
+        blksum:
+          filename: tebako-runtime-2.8.75-node-24.22.2-windows-ucrt-arm64.tfs.blksum.json
+          sha256: b207360e70843dacd0b1456799894ba01919a98ecd23a47a3e97f32359b20e4c
+      x86_64-linux-gnu:
+        artifact: tebako-runtime-2.8.75-node-24.22.2-linux-gnu-x86_64.tfs
+        sha256: 72e0f585b741e63c2232c690fb884a675b9306ed2875c1a84847e3d0c16819ed
+        blksum:
+          filename: tebako-runtime-2.8.75-node-24.22.2-linux-gnu-x86_64.tfs.blksum.json
+          sha256: f3de3124e5525b54838b85769d10ae75840ce5cf9a49d475a1f290b146a363b6
+      x86_64-linux-musl:
+        artifact: tebako-runtime-2.8.75-node-24.22.2-linux-musl-x86_64.tfs
+        sha256: 94c40948ced5879d3ced0d153370a2ccdf1fd024d1b042ee8e921d74786d4416
+        blksum:
+          filename: tebako-runtime-2.8.75-node-24.22.2-linux-musl-x86_64.tfs.blksum.json
+          sha256: e61085c060b71eb5753cc97d5e0d7b89d632a0d051d2ce35b36208a641eaad68
+      x86_64-macos:
+        artifact: tebako-runtime-2.8.75-node-24.22.2-macos-x86_64.tfs
+        sha256: 36332490f056d1b33f491e18a3db6f59646287c64ec03ba80bf77a456b9655f9
+        blksum:
+          filename: tebako-runtime-2.8.75-node-24.22.2-macos-x86_64.tfs.blksum.json
+          sha256: 6790e2adbcf86c0849ba24400e0ed2e0b561913b12c9f0f33fa4269ccfe6a15f
+      x86_64-windows-ucrt:
+        artifact: tebako-runtime-2.8.75-node-24.22.2-windows-ucrt64.tfs
+        sha256: b2faadbb760a639f8028c401747b2006a22a58df5c0fb108134eb83336881a17
+        blksum:
+          filename: tebako-runtime-2.8.75-node-24.22.2-windows-ucrt64.tfs.blksum.json
+          sha256: e0d9f91737dd06b3c9a89b70ca4cc15f60e792aaed8a7d5f61f6f709b23df1ac
+    release:
+      ref: tfs:github:tamatebako/tebako-runtime-node:v2.8.75
   engine: node
-  default: 24.22.1-2.8.64
+  default: 24.22.2-2.8.75
