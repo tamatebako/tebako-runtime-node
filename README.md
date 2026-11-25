@@ -54,6 +54,38 @@ linux (gnu + musl, x86_64 + arm64), windows (x86_64 + arm64 — upstream's
 win-arm64 dist, official since the v20 line, paired with the product's
 windows-ucrt-arm64 launcher).
 
+## The macOS dyld plane (tebako#1117)
+
+The hardened runtime strips `DYLD_INSERT_LIBRARIES` at exec on macOS 14
+when the EXEC TARGET's own signature lacks
+`com.apple.security.cs.allow-dyld-environment-variables` (the
+tebako-runtime-r#5 class). This shape has two targets and is covered at
+both, without any grant in the wrapper's own profile
+(`tools/runtime.entitlements`):
+
+- The **wrapper** (tebako-signed): its boot-head self-insert fires on
+  macOS, but the wrapper only mounts, materializes the interpreter's
+  load closure, and execs — nothing in its process consumes the
+  interpose dylib, so a stripped insertion is the product's designed
+  loud fallback, never a boot failure (the same product wrapper runs
+  green on darwin-23 in the openjdk line with no entitlements at all).
+- The **interpreter** (upstream's bytes, byte-identical): node IS a
+  preload-tier runtime — its core IO (the dist tree, the payload's
+  modules) rides the shim — and the insertion survives macOS 14
+  because UPSTREAM's signature carries the grant: verified on the
+  published v2.8.75 pair — `bin/node` is hardened-signed by the Node.js
+  Foundation (HX7739G8FX) carrying
+  `com.apple.security.cs.allow-dyld-environment-variables` (plus
+  allow-jit, allow-unsigned-executable-memory,
+  disable-library-validation) — and the published pair boots green on
+  darwin-23 (macOS 14.1.1 arm64): `node-boot-ok v24.22.2` with an
+  in-image read served through the shim.
+
+The grant question reopens only if upstream ever ships a macOS binary
+without the grant (a staging-time `codesign -d --entitlements`
+assertion on the interpreter is the named future guard) — never for
+the wrapper's own profile under this shape.
+
 ## Release shape
 
 On a tag, each build leg **publishes and signs in-leg**: the leg that
